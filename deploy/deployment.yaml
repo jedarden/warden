@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warden
+  namespace: warden
+  labels:
+    app: warden
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: warden
+  template:
+    metadata:
+      labels:
+        app: warden
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: warden
+          # PIN a digest — never :latest. Filled in by the warden-build workflow.
+          image: ronaldraygun/warden@sha256:REPLACE_WITH_DIGEST
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - secretRef:
+                name: warden-secrets   # WARDEN_SPOT_REFRESH_TOKEN, WARDEN_ORG_NAMESPACE, WARDEN_CALLER_TOKENS
+          env:
+            - name: WARDEN_MAX_TOTAL_NODES
+              value: "10"
+            - name: WARDEN_ALLOWED_SERVER_CLASSES
+              value: "gp.vs1.medium-iad"
+            - name: WARDEN_MAX_BID_PRICE
+              value: "0.001"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 20

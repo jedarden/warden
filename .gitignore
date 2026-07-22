@@ -1,0 +1,14 @@
+# build output
+/warden
+/dist/
+*.exe
+
+# local secrets / env — never commit
+.env
+*.local
+secrets.auto.tfvars
+
+# editor / os
+.DS_Store
+.idea/
+.vscode/

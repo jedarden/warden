@@ -1,0 +1,43 @@
+# Argo WorkflowTemplate to build + push the warden image.
+# Belongs in declarative-config at k8s/iad-ci/argo-workflows/ (ArgoCD syncs it).
+# Mirrors the fleet's other *-build templates: Docker build -> ronaldraygun/warden.
+# Pin by digest downstream; never deploy :latest.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: warden-build
+  namespace: argo-workflows
+spec:
+  entrypoint: build
+  arguments:
+    parameters:
+      - name: repo
+        value: https://git.ardenone.com/jedarden/warden.git
+      - name: revision
+        value: main
+      - name: image
+        value: ronaldraygun/warden
+  templates:
+    - name: build
+      inputs:
+        parameters:
+          - name: repo
+          - name: revision
+          - name: image
+      container:
+        image: gcr.io/kaniko-project/executor:v1.23.2
+        args:
+          - --context={{inputs.parameters.repo}}#{{inputs.parameters.revision}}
+          - --dockerfile=Dockerfile
+          - --destination={{inputs.parameters.image}}:{{inputs.parameters.revision}}
+          - --digest-file=/dev/termination-log
+        volumeMounts:
+          - name: docker-config
+            mountPath: /kaniko/.docker
+      volumes:
+        - name: docker-config
+          secret:
+            secretName: dockerhub-config
+            items:
+              - key: .dockerconfigjson
+                path: config.json

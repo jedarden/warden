@@ -1,0 +1,16 @@
+# Tailnet-only exposure via the cluster's single Traefik ingress.
+# Fill in the tailnet host for rs-manager. No public entrypoint.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: warden
+  namespace: warden
+spec:
+  entryPoints:
+    - websecure   # tailnet entrypoint (VPN only)
+  routes:
+    - match: Host(`warden-rs-manager.REPLACE.ts.net`)
+      kind: Rule
+      services:
+        - name: warden
+          port: 80
