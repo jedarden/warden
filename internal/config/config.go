@@ -52,7 +52,7 @@ func Load() (*Config, error) {
 	}
 	c.MaxTotalNodes = maxNodes
 
-	bid, err := strconv.ParseFloat(env("WARDEN_MAX_BID_PRICE", "0.001"), 64)
+	bid, err := strconv.ParseFloat(env("WARDEN_MAX_BID_PRICE", "0.01"), 64)
 	if err != nil {
 		return nil, fmt.Errorf("WARDEN_MAX_BID_PRICE: %w", err)
 	}

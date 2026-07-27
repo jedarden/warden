@@ -11,9 +11,9 @@ func fixedPool(name, class string, desired int, bid string) spot.NodePool {
 	return spot.NodePool{
 		Metadata: spot.Metadata{Name: name},
 		Spec: spot.NodePoolSpec{
-			ServerClass:  class,
-			BidPrice:     bid,
-			DesiredCount: &d,
+			ServerClass: class,
+			BidPrice:    bid,
+			Desired:     &d,
 		},
 	}
 }

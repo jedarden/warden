@@ -44,13 +44,16 @@ func NewClient(baseURL, tokenURL, clientID, refreshToken string, timeout time.Du
 
 type tokenResponse struct {
 	AccessToken string `json:"access_token"`
+	IDToken     string `json:"id_token"`
 	ExpiresIn   int    `json:"expires_in"`
 	TokenType   string `json:"token_type"`
 }
 
 // accessToken returns a valid bearer token, exchanging the refresh token via
 // the OAuth refresh-token grant when the cached token is missing or near
-// expiry.
+// expiry. NOTE: the Spot API validates the OIDC `id_token` (a JWT), NOT the
+// opaque `access_token` — sending access_token yields "Jwt is not in the form
+// of Header.Payload.Signature". So we bear the id_token.
 func (c *Client) accessToken(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -82,10 +85,10 @@ func (c *Client) accessToken(ctx context.Context) (string, error) {
 	if err := json.Unmarshal(body, &tr); err != nil {
 		return "", fmt.Errorf("oauth token decode: %w", err)
 	}
-	if tr.AccessToken == "" {
-		return "", fmt.Errorf("oauth token response missing access_token")
+	if tr.IDToken == "" {
+		return "", fmt.Errorf("oauth token response missing id_token")
 	}
-	c.token = tr.AccessToken
+	c.token = tr.IDToken
 	ttl := time.Duration(tr.ExpiresIn) * time.Second
 	if ttl <= 0 {
 		ttl = 5 * time.Minute
@@ -169,7 +172,7 @@ func (c *Client) ScaleNodePool(ctx context.Context, ns, name string, count int, 
 	if autoscaled {
 		patch = map[string]any{"spec": map[string]any{"autoscaling": map[string]any{"maxNodes": count}}}
 	} else {
-		patch = map[string]any{"spec": map[string]any{"desiredCount": count}}
+		patch = map[string]any{"spec": map[string]any{"desired": count}}
 	}
 	body, err := json.Marshal(patch)
 	if err != nil {

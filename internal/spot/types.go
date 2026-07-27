@@ -3,14 +3,15 @@ package spot
 // NodePool is a partial view of the ngpc.rxt.io/v1 SpotNodePool CRD — only the
 // fields warden reads or writes.
 //
-// VERIFY BEFORE GO-LIVE: the spec field names below come from the Rackspace
-// Spot public-API docs (serverClass, bidPrice, desiredCount,
-// autoscaling.{enabled,minNodes,maxNodes}). Confirm them against a live
+// Field names VERIFIED 2026-07-27 against a live pool in org-knyiltp8zznvkz5g:
 //
-//	GET /apis/ngpc.rxt.io/v1/namespaces/<org>/spotnodepools/<name>
+//	{"serverClass":"...","bidPrice":"0.01","cloudSpace":"agent-sandbox",
+//	 "desired":1,"autoscaling":{"enabled":false}}
 //
-// from the real org before wiring the token, and adjust the json tags if they
-// differ. This is a one-line-per-field change and does not affect the policy.
+// Note: the fixed-count field is `desired` (NOT `desiredCount`), and the
+// cloudspace ref is `cloudSpace` (capital S). Autoscaling min/max field names
+// are still assumed (the sample pool had autoscaling disabled) — confirm the
+// first time an autoscaled pool exists.
 type NodePool struct {
 	Metadata Metadata     `json:"metadata"`
 	Spec     NodePoolSpec `json:"spec"`
@@ -22,12 +23,11 @@ type Metadata struct {
 }
 
 type NodePoolSpec struct {
-	ServerClass  string       `json:"serverClass"`
-	BidPrice     string       `json:"bidPrice,omitempty"`
-	DesiredCount *int         `json:"desiredCount,omitempty"`
-	Autoscaling  *Autoscaling `json:"autoscaling,omitempty"`
-	CloudSpace   string       `json:"cloudspace,omitempty"`
-	Region       string       `json:"region,omitempty"`
+	ServerClass string       `json:"serverClass"`
+	BidPrice    string       `json:"bidPrice,omitempty"`
+	Desired     *int         `json:"desired,omitempty"`
+	Autoscaling *Autoscaling `json:"autoscaling,omitempty"`
+	CloudSpace  string       `json:"cloudSpace,omitempty"`
 }
 
 type Autoscaling struct {
@@ -47,8 +47,8 @@ func (p NodePool) UpperBound() int {
 	if p.Autoscaled() {
 		return p.Spec.Autoscaling.MaxNodes
 	}
-	if p.Spec.DesiredCount != nil {
-		return *p.Spec.DesiredCount
+	if p.Spec.Desired != nil {
+		return *p.Spec.Desired
 	}
 	return 0
 }

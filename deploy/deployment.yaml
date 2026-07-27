@@ -34,7 +34,7 @@ spec:
             - name: WARDEN_ALLOWED_SERVER_CLASSES
               value: "gp.vs1.medium-iad"
             - name: WARDEN_MAX_BID_PRICE
-              value: "0.001"
+              value: "0.01"   # Spot raised the gp.vs1.medium floor to 0.01/hr (was 0.001); verified via serverclasses API 2026-07-27
           resources:
             requests:
               cpu: 25m
