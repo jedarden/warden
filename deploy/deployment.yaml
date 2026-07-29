@@ -21,8 +21,9 @@ spec:
           type: RuntimeDefault
       containers:
         - name: warden
-          # PIN a digest — never :latest. Filled in by the warden-build workflow.
-          image: ronaldraygun/warden@sha256:REPLACE_WITH_DIGEST
+          # Semver tag from the repo's VERSION file — never :latest, never a bare
+          # digest/SHA (declarative-config/k8s/CLAUDE.md rule 8).
+          image: ronaldraygun/warden:REPLACE_WITH_VERSION
           ports:
             - containerPort: 8080
           envFrom:

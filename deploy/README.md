@@ -17,7 +17,7 @@ cluster rule, nothing here is applied with `kubectl` directly — copy into
 
 1. Create the dedicated Spot org + a `gp.vs1.medium-iad` node pool (console/Terraform).
 2. Verify SpotNodePool field names against the live object (`internal/spot/types.go`).
-3. Build the image via the `warden-build` WorkflowTemplate (pinned digest → `ronaldraygun/warden`).
+3. Build the image via the `warden-build` WorkflowTemplate (tags `ronaldraygun/warden` with the repo's `VERSION` file — semver, per declarative-config's rule against `:latest`/bare-digest tags in manifests).
 4. Create `warden-secrets` SealedSecret in rs-manager (`sealedsecret.md`).
 5. Commit manifests to `declarative-config`; ArgoCD syncs.
 6. Point the autoscaler/dispatcher at `https://warden-rs-manager.<tailnet>.ts.net`.

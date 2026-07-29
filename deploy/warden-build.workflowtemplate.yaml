@@ -1,43 +1,103 @@
 # Argo WorkflowTemplate to build + push the warden image.
 # Belongs in declarative-config at k8s/iad-ci/argo-workflows/ (ArgoCD syncs it).
-# Mirrors the fleet's other *-build templates: Docker build -> ronaldraygun/warden.
-# Pin by digest downstream; never deploy :latest.
+# Docker build -> ronaldraygun/warden, tagged with the repo's VERSION file (semver)
+# per declarative-config/k8s/CLAUDE.md rule 8 — never :latest-only, never a bare
+# digest/SHA tag in the manifest. Bump VERSION as part of the commit that changes
+# the code; this template just reads it, it does not auto-bump.
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
   name: warden-build
   namespace: argo-workflows
+  labels:
+    app: warden-build
 spec:
   entrypoint: build
+  serviceAccountName: argo-workflow
   arguments:
     parameters:
-      - name: repo
-        value: https://git.ardenone.com/jedarden/warden.git
-      - name: revision
+      - name: git-repo
+        value: git.ardenone.com/jedarden/warden
+      - name: branch
         value: main
-      - name: image
-        value: ronaldraygun/warden
+  volumes:
+    - name: docker-config
+      secret:
+        secretName: docker-hub-registry
+        items:
+          - key: .dockerconfigjson
+            path: config.json
   templates:
     - name: build
+      steps:
+        - - name: resolve-version
+            template: resolve-version
+        - - name: docker-build
+            template: docker-build
+            arguments:
+              parameters:
+                - name: version
+                  value: "{{steps.resolve-version.outputs.parameters.version}}"
+
+    - name: resolve-version
+      activeDeadlineSeconds: 120
+      script:
+        image: alpine/git
+        command: [sh]
+        source: |
+          set -e
+          git clone --branch {{workflow.parameters.branch}} --depth 1 \
+            "https://x-token:${FORGEJO_TOKEN}@{{workflow.parameters.git-repo}}.git" \
+            /tmp/repo
+          cd /tmp/repo
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+          echo "$VERSION" > /tmp/version
+          echo "Building version: ${VERSION}"
+        env:
+          - name: FORGEJO_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: forgejo-webhook-token
+                key: token
+      outputs:
+        parameters:
+          - name: version
+            valueFrom:
+              path: /tmp/version
+
+    - name: docker-build
       inputs:
         parameters:
-          - name: repo
-          - name: revision
-          - name: image
+          - name: version
+      activeDeadlineSeconds: 900
+      retryStrategy:
+        limit: "2"
+        retryPolicy: OnError
+        backoff:
+          duration: 30s
+          factor: "2"
       container:
         image: gcr.io/kaniko-project/executor:v1.23.2
         args:
-          - --context={{inputs.parameters.repo}}#{{inputs.parameters.revision}}
+          - --context=git://{{workflow.parameters.git-repo}}.git#refs/heads/{{workflow.parameters.branch}}
           - --dockerfile=Dockerfile
-          - --destination={{inputs.parameters.image}}:{{inputs.parameters.revision}}
-          - --digest-file=/dev/termination-log
+          - --destination=ronaldraygun/warden:{{inputs.parameters.version}}
+          - --destination=ronaldraygun/warden:latest
+        env:
+          - name: GIT_USERNAME
+            value: x-token
+          - name: GIT_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: forgejo-webhook-token
+                key: token
         volumeMounts:
           - name: docker-config
             mountPath: /kaniko/.docker
-      volumes:
-        - name: docker-config
-          secret:
-            secretName: docker-hub-registry
-            items:
-              - key: .dockerconfigjson
-                path: config.json
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 2000m
+            memory: 4Gi
