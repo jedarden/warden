@@ -15,6 +15,8 @@ spec:
       labels:
         app: warden
     spec:
+      imagePullSecrets:
+        - name: docker-hub-registry
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -23,17 +25,25 @@ spec:
         - name: warden
           # Semver tag from the repo's VERSION file — never :latest, never a bare
           # digest/SHA (declarative-config/k8s/CLAUDE.md rule 8).
-          image: ronaldraygun/warden:REPLACE_WITH_VERSION
+          image: ronaldraygun/warden:0.1.0
           ports:
             - containerPort: 8080
           envFrom:
             - secretRef:
-                name: warden-secrets   # WARDEN_SPOT_REFRESH_TOKEN, WARDEN_ORG_NAMESPACE, WARDEN_CALLER_TOKENS
+                name: warden-spot-credentials   # WARDEN_SPOT_REFRESH_TOKEN
+            - secretRef:
+                name: warden-caller-tokens      # WARDEN_CALLER_TOKENS
           env:
+            - name: WARDEN_ORG_NAMESPACE
+              # Not a secret — the dedicated apexalgo-agent org's namespace,
+              # confirmed via the 2026-07-27 live-API probe.
+              value: "org-knyiltp8zznvkz5g"
             - name: WARDEN_MAX_TOTAL_NODES
               value: "10"
             - name: WARDEN_ALLOWED_SERVER_CLASSES
-              value: "gp.vs1.medium-iad"
+              # Matches the real pool on the agent-sandbox cloudspace (us-central-ord-1),
+              # NOT gp.vs1.medium-iad — see the class-mismatch note in project memory.
+              value: "ch.vs1.large-ord"
             - name: WARDEN_MAX_BID_PRICE
               value: "0.01"   # Spot raised the gp.vs1.medium floor to 0.01/hr (was 0.001); verified via serverclasses API 2026-07-27
           resources:
