@@ -19,6 +19,10 @@ spec:
         - name: docker-hub-registry
       securityContext:
         runAsNonRoot: true
+        # gcr.io/distroless/static:nonroot only declares a non-numeric "nonroot"
+        # user in its image metadata; kubelet can't verify runAsNonRoot against
+        # that without an explicit numeric UID. 65532 is that image's fixed UID.
+        runAsUser: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
