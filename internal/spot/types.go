@@ -8,10 +8,10 @@ package spot
 //	{"serverClass":"...","bidPrice":"0.01","cloudSpace":"agent-sandbox",
 //	 "desired":1,"autoscaling":{"enabled":false}}
 //
-// Note: the fixed-count field is `desired` (NOT `desiredCount`), and the
-// cloudspace ref is `cloudSpace` (capital S). Autoscaling min/max field names
-// are still assumed (the sample pool had autoscaling disabled) — confirm the
-// first time an autoscaled pool exists.
+// Autoscaling min/max field names VERIFIED 2026-08-02 against official Spot Go SDK
+// documentation: https://spot.rackspace.com/docs/en/go-sdk
+//
+// The Autoscaling struct uses camelCase: minNodes, maxNodes (not snake_case).
 type NodePool struct {
 	Metadata Metadata     `json:"metadata"`
 	Spec     NodePoolSpec `json:"spec"`

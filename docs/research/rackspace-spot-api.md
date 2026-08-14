@@ -47,20 +47,22 @@ GET /apis/auth.ngpc.rxt.io/v1/organizations
   - Modify: `PATCH  /apis/ngpc.rxt.io/v1/namespaces/{ns}/spotnodepools/{name}`
   - Delete: `DELETE /apis/ngpc.rxt.io/v1/namespaces/{ns}/spotnodepools/{name}`
 
-## Spec fields (from docs; VERIFY against live object)
+## Spec fields (VERIFIED 2026-08-02)
 
 - `serverClass` — instance type, e.g. `gp.vs1.medium-iad` (region-suffixed).
 - `bidPrice` — max spot price.
-- `desiredCount` — fixed node count (fixed-size pools).
+- `desired` — fixed node count (fixed-size pools) — **NOT** `desiredCount`.
 - `autoscaling.enabled` / `autoscaling.minNodes` / `autoscaling.maxNodes` —
-  cluster-autoscaler bounds. When autoscaling is enabled, do **not** set a fixed
-  desired count (Terraform: `desired_server_count` must be omitted).
-- `cloudspace`, `region`.
+  cluster-autoscaler bounds (camelCase, NOT snake_case). When autoscaling is
+  enabled, do **not** set a fixed desired count (Terraform: `desired_server_count`
+  must be omitted).
+- `cloudSpace` — cloudspace ref (capital S) — **NOT** `cloudspace`.
+- No `region` on the pool (region lives on the cloudspace / serverclass).
 
 > The docs don't publish the exhaustive spec, and Terraform uses snake_case
-> (`server_class`, `bid_price`, `min_nodes`) which may differ from the CRD's
-> camelCase. Confirm the exact JSON field names with a live
-> `GET spotnodepools/<name>` before go-live. warden isolates this in
+> (`server_class`, `bid_price`, `min_nodes`) which differs from the CRD's
+> camelCase. All JSON field names have been verified against live API responses
+> and official Spot Go SDK documentation. warden isolates the correct schema in
 > `internal/spot/types.go`.
 
 ## Notes
@@ -98,6 +100,8 @@ per-org: this token **403s** on other orgs' namespaces.
 ```
 - Fixed count is **`desired`** (NOT `desiredCount`).
 - Cloudspace ref is **`cloudSpace`** (capital S).
+- Autoscaling fields use **camelCase**: `minNodes`, `maxNodes` (VERIFIED 2026-08-02
+  against official Spot Go SDK documentation).
 - No `region` on the pool (region lives on the cloudspace / serverclass).
 
 ### ServerClass — pricing & the minimum bid
