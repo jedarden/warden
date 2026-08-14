@@ -1,2 +1,2 @@
 bead_cli:
-  backend: bead-forge
+  backend: bead-rs

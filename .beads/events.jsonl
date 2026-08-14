@@ -1,3 +1,0 @@
-{"bead":"wd-1sk","event":"claim","strand":"explore","ts":"2026-08-06T04:10:25.105775056+00:00","worker":"debug-worker"}
-{"adapter":"echo-test","bead":"wd-1sk","event":"dispatch","model":null,"strand":"explore","ts":"2026-08-06T04:10:25.152477641+00:00","worker":"debug-worker"}
-{"bead":"wd-1sk","duration_ms":75,"event":"complete","exit_code":0,"outcome":"success","strand":"explore","ts":"2026-08-06T04:10:25.228949804+00:00","worker":"debug-worker"}
