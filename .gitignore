@@ -12,3 +12,6 @@ secrets.auto.tfvars
 .DS_Store
 .idea/
 .vscode/
+
+# bf repair/recovery scratch — local diagnostics, not source
+.beads/recovery/
