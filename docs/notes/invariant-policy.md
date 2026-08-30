@@ -10,7 +10,7 @@ trivially bypassed by adding a second pool.
 |-----------|---------|--------------|
 | Max total nodes (org ceiling) | `10` | `count + Σ UpperBound(other pools) ≤ max` |
 | Allowed server classes | `gp.vs1.medium-iad` | target pool's `serverClass` must be in the set |
-| Bid cap | `0.001` | refuse to grow a pool whose `bidPrice > cap` |
+| Bid cap | `0.01` | refuse to grow a pool whose `bidPrice > cap` |
 | Node count | `≥ 0` | negative denied |
 
 `UpperBound(pool)` = `autoscaling.maxNodes` if autoscaling is enabled, else

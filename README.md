@@ -28,7 +28,7 @@ clusters, two boundaries compose:
 - **Max total nodes** across the whole org (default **10**) — a true ceiling
   that counts each pool's autoscaling max, not just its current size.
 - **Allowed server classes** only (default `gp.vs1.medium-iad`).
-- **Bid cap** (default `0.001`) — warden refuses to grow a pool bidding above it.
+- **Bid cap** (default `0.01`) — warden refuses to grow a pool bidding above it.
 - **No create / delete / re-shape** — impossible by construction: the intent API
   exposes no field for them.
 

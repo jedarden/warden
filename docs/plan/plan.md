@@ -11,7 +11,7 @@ standalone form of a SEAM route, built to be absorbed into SEAM once SEAM ships.
 ## Context & motivation
 
 The fleet wants elastic NEEDLE-worker compute on Rackspace Spot (medium class,
-~$0.001/hr floor bid). Programmatically reshaping a Spot cluster requires the
+~$0.01/hr floor bid). Programmatically reshaping a Spot cluster requires the
 **organization-scoped** control-plane API, and Spot's IAM is coarse — one org
 token can reshape or delete every cloudspace in the org. Handing that token to
 autonomous agents is unacceptable if the org also contains production trading
@@ -79,7 +79,7 @@ For a request to scale pool `P` to `count`:
 
 1. `count >= 0`.
 2. `P.serverClass ∈ allowlist` (default `{gp.vs1.medium-iad}`).
-3. `P.bidPrice <= maxBid` (default `0.001`); unparseable bid ⇒ deny.
+3. `P.bidPrice <= maxBid` (default `0.01`); unparseable bid ⇒ deny.
 4. `count + Σ UpperBound(other pools) <= maxTotalNodes` (default `10`).
 
 Impossible by construction (no endpoint / field): create pool, delete pool,
