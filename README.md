@@ -1,5 +1,9 @@
 # warden
 
+> **Status — paused internal tooling:** the implementation is specific to the
+> author's Rackspace Spot environment and has no public release. Its policy
+> model is expected to move into [SEAM](https://github.com/jedarden/SEAM).
+
 A policy-enforcing gateway that sits between the agent fleet and the Rackspace
 Spot control-plane API. Agents ask warden to resize a node pool; warden holds
 the Spot credential, enforces a hard envelope (max total nodes, allowed
@@ -7,7 +11,7 @@ server-class, bid cap), and forwards only what is inside that envelope. Agents
 never see the Spot token.
 
 warden is the interim, standalone form of a capability that belongs in
-[SEAM](../SEAM) — a credential-injecting gateway fronting fleet upstreams. It is
+[SEAM](https://github.com/jedarden/SEAM) — a credential-injecting gateway fronting fleet upstreams. It is
 built to be **absorbed**: its intent API becomes a SEAM route, and its policy
 lifts into a SEAM route fragment. See `docs/plan/plan.md`.
 
