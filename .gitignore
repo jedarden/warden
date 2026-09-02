@@ -15,3 +15,6 @@ secrets.auto.tfvars
 
 # bf repair/recovery scratch — local diagnostics, not source
 .beads/recovery/
+
+# NEEDLE execution traces are local diagnostics.
+**/.beads/traces/
