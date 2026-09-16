@@ -116,7 +116,9 @@ See `docs/notes/security-model.md`.
       on node loss) — prerequisite for leaning on floor-bid Spot.
 - [ ] Phase 6 (absorption): expose the intent API as a SEAM route; move the token
       and policy behind SEAM; retire warden's standalone auth in favor of SEAM
-      per-agent identity (SEAM Phase 7 / NEEDLE tsnet identity).
+      per-agent identity (SEAM Phase 7 / NEEDLE tsnet identity). Tracked by
+      genesis bead `warden-7fd4d20b` (deferred until the SEAM Phase 7
+      prerequisites land).
 
 ## Open questions
 
