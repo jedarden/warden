@@ -156,3 +156,20 @@ Probe safety note: every probe patch wrote the pool's then-current count back
 (no-op), so an inert precondition could not have mutated the org; the one
 state-changing payload was guarded by an already-verified stale RV and was
 confirmed unapplied.
+
+### Independently re-run 2026-09-16 (close of bead `warden-efd77a40`)
+
+Second credentialed pass, same pool, **strictly no-op-content patches only** —
+no state-changing payload this time, so nothing short of an external writer
+could have moved the pool at all. Every finding above reproduced:
+
+- LIST: every item carried `resourceVersion` (0 missing); GET: rv `"77772631"`,
+  generation 2.
+- Current-RV no-op patch → **200**, RV unchanged.
+- Stale RV (`rv−1`) → **409** with the exact conflict message above; pool
+  untouched.
+- Non-numeric RV → **500** `strconv.ParseUint: parsing "bogus-rv-xyz": invalid
+  syntax`, pool untouched.
+- Org state identical pre/post probe. The RV being *still* `77772631` hours
+  after the first probe is itself confirmation that no-op patches do not bump
+  it — and that no out-of-band writer touched the pool in between.

@@ -65,7 +65,9 @@ enforce. The window is closed by two layers:
    as a deny.
 
 **Verified live (2026-09-16, credentialed probe — bead `warden-efd77a40`;
-wire details in `docs/research/rackspace-spot-api.md`):** layer 2 is **real**,
+independently re-run on close the same day with strictly no-op-content
+patches, org state byte-identical pre/post; wire details in
+`docs/research/rackspace-spot-api.md`):** layer 2 is **real**,
 not dead weight. The ngpc API behaves like an apiserver exactly where the
 design needs it to:
 
