@@ -7,7 +7,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,6 +21,11 @@ import (
 	"git.ardenone.com/jedarden/warden/internal/server"
 	"git.ardenone.com/jedarden/warden/internal/spot"
 )
+
+// shutdownGrace bounds how long in-flight requests may keep running after the
+// process is asked to stop. Connections still active when it expires are
+// dropped.
+const shutdownGrace = 10 * time.Second
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -34,30 +41,56 @@ func main() {
 	srv := server.New(cfg.OrgNamespace, pol, sc, cfg.CallerTokens, log, cfg.RequestTimeout)
 
 	httpSrv := &http.Server{
-		Addr:              cfg.ListenAddr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	go func() {
-		log.Info("warden listening",
-			"addr", cfg.ListenAddr,
-			"namespace", cfg.OrgNamespace,
-			"max_total_nodes", cfg.MaxTotalNodes,
-			"allowed_classes", cfg.AllowedServerClasses,
-			"max_bid", cfg.MaxBidPrice,
-		)
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Error("http server", "err", err)
-			os.Exit(1)
-		}
-	}()
+	ln, err := net.Listen("tcp", cfg.ListenAddr)
+	if err != nil {
+		log.Error("listen", "addr", cfg.ListenAddr, "err", err)
+		os.Exit(1)
+	}
+	log.Info("warden listening",
+		"addr", ln.Addr().String(),
+		"namespace", cfg.OrgNamespace,
+		"max_total_nodes", cfg.MaxTotalNodes,
+		"allowed_classes", cfg.AllowedServerClasses,
+		"max_bid", cfg.MaxBidPrice,
+	)
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := serve(ctx, log, httpSrv, ln, shutdownGrace); err != nil {
+		log.Error("http server", "err", err)
+		os.Exit(1)
+	}
+}
+
+// serve runs httpSrv on ln until ctx is cancelled or Serve fails fatally.
+// Cancellation triggers a bounded drain: the listener closes at once and
+// in-flight requests may finish within grace; an overrun drain is logged and
+// its dropped connections accepted rather than treated as a fatal error.
+// Serve's ErrServerClosed is the expected outcome of that path, so serve
+// returns nil; any other error is a real startup/runtime failure and is
+// returned for the caller to log and exit on.
+func serve(ctx context.Context, log *slog.Logger, httpSrv *http.Server, ln net.Listener, grace time.Duration) error {
+	errCh := make(chan error, 1)
+	go func() { errCh <- httpSrv.Serve(ln) }()
+
+	select {
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+	}
+
 	log.Info("shutting down")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	dctx, cancel := context.WithTimeout(context.Background(), grace)
 	defer cancel()
-	_ = httpSrv.Shutdown(ctx)
+	if err := httpSrv.Shutdown(dctx); err != nil {
+		log.Error("shutdown drain exceeded grace; in-flight requests dropped", "err", err)
+	}
+	return nil
 }
