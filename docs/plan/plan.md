@@ -64,14 +64,18 @@ NEEDLE workers / autoscaler          warden (in rs-manager, tailnet-only)       
 ## Data models
 
 `SpotNodePool` (partial, `ngpc.rxt.io/v1`): `spec.serverClass`, `spec.bidPrice`,
-`spec.desiredCount` (fixed pools), `spec.autoscaling.{enabled,minNodes,maxNodes}`
+`spec.desired` (fixed pools), `spec.autoscaling.{enabled,minNodes,maxNodes}`
 (autoscaled pools). A pool's **UpperBound** = `maxNodes` when autoscaling is on,
-else `desiredCount` — this is what the org-wide cap sums, making the cap a true
+else `desired` — this is what the org-wide cap sums, making the cap a true
 ceiling rather than a snapshot.
 
-> Field names are from the public-API docs and must be verified against a live
-> `GET spotnodepools/<name>` in the real org before go-live (see
-> `internal/spot/types.go`).
+> Field names are verified, not assumed: the fixed count is **`desired`** (not
+> `desiredCount`) and the cloudspace ref is `cloudSpace`, confirmed against a
+> live `GET spotnodepools/<name>` on 2026-07-27; the autoscaling camelCase
+> fields are confirmed against the official Spot Go SDK (2026-08-02). See
+> `docs/research/rackspace-spot-api.md` and `internal/spot/types.go`. Live
+> confirmation of the autoscaling `minNodes`/`maxNodes` fields specifically is
+> tracked separately (bead `warden-9abf320c`).
 
 ## Enforcement invariants
 
@@ -105,8 +109,10 @@ See `docs/notes/security-model.md`.
 
 - [x] Phase 1: Enforcement core (policy engine + tests), Spot client, intent API,
       audit, config. Builds, vets, tests green.
-- [ ] Phase 2: Field-name verification against the live org CRD; wire the real
-      refresh token via SealedSecret.
+- [ ] Phase 2: Wire the real refresh token via SealedSecret. (Field-name
+      verification against the live org CRD is done — 2026-07-27 probe, see
+      `docs/research/rackspace-spot-api.md`; live confirmation of the
+      autoscaling min/max fields is tracked in bead `warden-9abf320c`.)
 - [ ] Phase 3: Containerize (Argo `warden-build` WorkflowTemplate → `ronaldraygun/warden`,
       pinned digest) and deploy via `declarative-config` (`k8s/rs-manager/warden/`),
       tailnet-only IngressRoute.
@@ -122,7 +128,10 @@ See `docs/notes/security-model.md`.
 
 ## Open questions
 
-- Exact SpotNodePool CRD field names (see Phase 2).
+- Exact SpotNodePool CRD field names — resolved (2026-07-27 live probe:
+  fixed count is `desired`, cloudspace ref is `cloudSpace`); live
+  confirmation of the autoscaling min/max fields is tracked in bead
+  `warden-9abf320c`.
 - One pool per worker vs. one pool autoscaled 0..N — affects how preemption
   churns. The scale-path half is decided (2026-09-16): autoscaled pools scale by
   ceiling — "scale to N" patches `autoscaling.maxNodes`, never `desired`, and

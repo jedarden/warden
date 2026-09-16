@@ -15,8 +15,9 @@ trivially bypassed by adding a second pool.
 | Autoscaling window | — | autoscaled target: `count ≥ autoscaling.minNodes` |
 
 `UpperBound(pool)` = `autoscaling.maxNodes` if autoscaling is enabled, else
-`desiredCount`. Summing upper bounds (not current sizes) makes the cap a true
-ceiling on how many nodes the org can *ever* hold.
+`spec.desired` (the live field name is `desired`, not `desiredCount` — see
+`docs/research/rackspace-spot-api.md`). Summing upper bounds (not current sizes)
+makes the cap a true ceiling on how many nodes the org can *ever* hold.
 
 ## Scale semantics — fixed vs autoscaled pools
 
