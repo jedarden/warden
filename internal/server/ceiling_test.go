@@ -13,6 +13,8 @@ package server
 // through the patch hook in the dedicated tests below.
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -179,8 +181,9 @@ func (f *fakeSpot) patchHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // newCeilingTestServer wires a warden Server against a fake Spot backend.
-// mutate runs before any request, to set delays or a patch hook.
-func newCeilingTestServer(t *testing.T, capNodes int, pools map[string]*fakePoolState, mutate func(*fakeSpot)) (*Server, *fakeSpot) {
+// mutate runs before any request, to set delays or a patch hook. Callers may
+// pass a logger to capture audit output; the default discards it.
+func newCeilingTestServer(t *testing.T, capNodes int, pools map[string]*fakePoolState, mutate func(*fakeSpot), loggers ...*slog.Logger) (*Server, *fakeSpot) {
 	t.Helper()
 	f := &fakeSpot{t: t, pools: pools, listDelay: 5 * time.Millisecond, patchDelay: 10 * time.Millisecond}
 	if mutate != nil {
@@ -196,6 +199,9 @@ func newCeilingTestServer(t *testing.T, capNodes int, pools map[string]*fakePool
 	sc := spot.NewClient(backend.URL, backend.URL+"/oauth/token", "client-id", "refresh", 10*time.Second)
 	pol := policy.NewConfig(capNodes, []string{testClass}, 0.01)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if len(loggers) > 0 {
+		log = loggers[0]
+	}
 	return New(testNS, pol, sc, []string{callerToken}, log, 10*time.Second), f
 }
 
@@ -407,5 +413,83 @@ func TestNoPreconditionSentWhenUpstreamHasNoRV(t *testing.T) {
 	defer f.mu.Unlock()
 	if len(f.patches) != 1 {
 		t.Errorf("expected a single attempt (no fallback loop), got %d", len(f.patches))
+	}
+}
+
+// TestScaleConflictExhaustionAuditsDeny pins the audit trail the fail-closed
+// path owes (verified against the live ngpc wire contract 2026-09-16 — see
+// docs/notes/invariant-policy.md "Concurrency"): each attempt's decision is
+// audited as an allow, and when every attempt has lost the race the caller
+// gets 409 and one final audited deny records that nothing was applied.
+func TestScaleConflictExhaustionAuditsDeny(t *testing.T) {
+	var auditBuf bytes.Buffer
+	auditLog := slog.New(slog.NewJSONHandler(&auditBuf, nil))
+	s, f := newCeilingTestServer(t, testOrgCap, map[string]*fakePoolState{
+		"pool-a": {desired: 2, rv: 5},
+	}, func(f *fakeSpot) {
+		f.listDelay, f.patchDelay = 0, 0
+		f.patchHook = func(name string, _ map[string]any, _ bool) int {
+			// Called with the backend lock held; keep the writer "moving" so
+			// every RV warden sends is stale.
+			f.pools[name].rv++
+			return http.StatusConflict
+		}
+	}, auditLog)
+
+	rec := s.scaleSync(t, "pool-a", 5)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 after exhausting retries, got %d: %s", rec.Code, rec.Body.String())
+	}
+	f.mu.Lock()
+	if got := f.pools["pool-a"].desired; got != 2 {
+		f.mu.Unlock()
+		t.Errorf("pool must be untouched after fail-closed deny, got desired=%d", got)
+	} else {
+		f.mu.Unlock()
+	}
+
+	type auditLine struct {
+		Msg     string `json:"msg"`
+		Allowed *bool  `json:"allowed"`
+		Reason  string `json:"reason"`
+		Count   int    `json:"count"`
+	}
+	var allows, denies []auditLine
+	sc := bufio.NewScanner(&auditBuf)
+	for sc.Scan() {
+		var line auditLine
+		if err := json.Unmarshal(sc.Bytes(), &line); err != nil {
+			t.Fatalf("audit line not JSON: %v", err)
+		}
+		if line.Msg != "audit" {
+			continue // warn/error logs share the handler
+		}
+		if line.Allowed == nil {
+			t.Fatalf("audit entry missing allowed: %s", sc.Text())
+		}
+		if *line.Allowed {
+			allows = append(allows, line)
+		} else {
+			denies = append(denies, line)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatalf("reading audit log: %v", err)
+	}
+
+	// One audited allow per re-decision (each attempt re-lists and re-decides
+	// before re-patching), then exactly one audited deny for the exhaustion.
+	if len(allows) != maxScaleAttempts {
+		t.Errorf("expected %d audited allows (one per attempt), got %d", maxScaleAttempts, len(allows))
+	}
+	if len(denies) != 1 {
+		t.Fatalf("expected exactly 1 audited deny on exhaustion, got %d", len(denies))
+	}
+	want := "pool changed concurrently on every attempt; request not applied"
+	if denies[0].Reason != want {
+		t.Errorf("deny reason = %q, want %q", denies[0].Reason, want)
+	}
+	if denies[0].Count != 5 {
+		t.Errorf("deny entry should record the requested count 5, got %d", denies[0].Count)
 	}
 }

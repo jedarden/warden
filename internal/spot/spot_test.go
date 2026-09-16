@@ -642,6 +642,34 @@ func TestScaleNodePoolPreconditionRejectedError(t *testing.T) {
 	}
 }
 
+// TestScaleNodePoolServerErrorStaysGeneric pins how a plain 500 on an
+// RV-carrying patch is classified. The live ngpc API parses resourceVersion
+// as uint64 (verified 2026-09-16): a malformed RV gets HTTP 500
+// ("strconv.ParseUint" failure), not 409/422. A 500 must therefore stay on
+// the generic error path — fail closed to the caller — and must not trigger
+// the precondition-free retry that a genuine shape rejection earns.
+func TestScaleNodePoolServerErrorStaysGeneric(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, "http://auth", "client", "refresh", 30*time.Second)
+	c.token = "mock-token"
+	c.expires = time.Now().Add(1 * time.Hour)
+
+	err := c.ScaleNodePool(context.Background(), "org-test", "test-pool", 5, false, "77772631")
+	if err == nil {
+		t.Fatal("Expected an error for status 500, got nil")
+	}
+	if IsConflict(err) {
+		t.Error("500 must not be classified as a conflict")
+	}
+	if IsPreconditionRejected(err) {
+		t.Error("500 must not trigger the precondition-free fallback path")
+	}
+}
+
 // TestScaleNodePoolToZero tests scaling to zero is allowed
 func TestScaleNodePoolToZero(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

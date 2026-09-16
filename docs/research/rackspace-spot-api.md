@@ -119,3 +119,40 @@ classes in one call. Per class:
 
 So the minimum bid needs **no probe / dummy bid** — it's a published field. One
 authenticated `GET serverclasses` gives minBid + market + capacity for all classes.
+
+## resourceVersion & optimistic concurrency — VERIFIED against the live API (2026-09-16)
+
+Probed with the `apexalgo-agent` org refresh token against pool
+`88c5e399-70ac-4825-a40f-7348395daf52` (namespace `org-knyiltp8zznvkz5g`,
+`agent-sandbox`, `ch.vs1.large-ord`, `desired: 2`, autoscaling disabled).
+This closes the open question from the 2026-07-27 probe (whose recorded
+samples predated metadata capture) — see `docs/notes/invariant-policy.md`
+"Concurrency". All patches were merge patches
+(`application/merge-patch+json`), the shape warden sends.
+
+- **RV is exposed.** `metadata` on GET **and** on LIST items carries
+  `resourceVersion` — a decimal string, e.g. `"77772631"` — alongside
+  `generation`, `uid`, `managedFields`, `finalizers`, `ownerReferences`:
+  apiserver-shaped metadata throughout.
+- **Current RV → 200.** A patch whose `metadata.resourceVersion` matches
+  current state applies normally.
+- **Mismatched RV → 409, write rejected.** Same patch with a wrong RV:
+  `409` and the Kubernetes-standard conflict body:
+  `Operation cannot be fulfilled on spotnodepools.ngpc.rxt.io "<name>": the
+  object has been modified; please apply your changes to the latest version
+  and try again`.
+- **The precondition protects the write, not just the patch shape.** A patch
+  carrying a *state change* (desired 2→3) plus a stale RV returned 409 and
+  `desired` stayed 2 — nothing was applied.
+- **No-op patches do not bump the RV.** Writing the current value back left
+  `resourceVersion` unchanged; the RV advances only on real modification.
+- **RV is parsed as uint64 server-side.** A non-numeric RV (`"bogus-rv-xyz"`)
+  yields **500** `strconv.ParseUint: parsing "bogus-rv-xyz": invalid syntax` —
+  not 409/422. Consequence for warden: only echo RVs the API issued; a
+  malformed RV fails closed via the generic error path, and the
+  precondition-shape fallback (400/422) never fires on this API.
+
+Probe safety note: every probe patch wrote the pool's then-current count back
+(no-op), so an inert precondition could not have mutated the org; the one
+state-changing payload was guarded by an already-verified stale RV and was
+confirmed unapplied.

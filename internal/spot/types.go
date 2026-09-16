@@ -24,8 +24,10 @@ type Metadata struct {
 	// a patch it acts as an optimistic-concurrency precondition on APIs with
 	// Kubernetes semantics (409 on mismatch) — see ScaleNodePool. It is
 	// optional metadata: warden does not depend on it for correctness, only
-	// uses it when the upstream provides one. (Recorded live ngpc API samples
-	// do not include it — see docs/notes/invariant-policy.md "Concurrency".)
+	// uses it when the upstream provides one. (VERIFIED live 2026-09-16: ngpc
+	// SpotNodePools carry it on both GET and LIST, and a merge patch with a
+	// mismatched RV is rejected 409 and NOT applied — see
+	// docs/notes/invariant-policy.md "Concurrency".)
 	ResourceVersion string `json:"resourceVersion,omitempty"`
 }
 

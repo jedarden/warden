@@ -64,27 +64,48 @@ enforce. The window is closed by two layers:
    the race, warden fails closed: 409 to the caller, nothing applied, audited
    as a deny.
 
-**Verified status of layer 2:** whether the Spot ngpc API exposes
-`resourceVersion` and honors it in merge patches is *not verified live* — no
-credentialed probe was possible from the dev box (2026-09-16), and the recorded
-live-response samples do not include it. Therefore:
+**Verified live (2026-09-16, credentialed probe — bead `warden-efd77a40`;
+wire details in `docs/research/rackspace-spot-api.md`):** layer 2 is **real**,
+not dead weight. The ngpc API behaves like an apiserver exactly where the
+design needs it to:
 
-- If the upstream ignores the precondition, it is harmless dead weight; layer 1
-  still enforces the ceiling.
-- If the upstream *rejects* an RV-carrying patch shape outright (400/422),
-  warden logs a warning and retries the identical patch once without the
-  precondition rather than failing every scale. The ceiling then rests on
-  layer 1 alone, which is the topology-correct guarantee.
+- SpotNodePool objects expose `metadata.resourceVersion` on GET **and** on the
+  LIST warden snapshots (a decimal string, e.g. `"77772631"`).
+- A merge patch carrying the *current* RV applies (200). One carrying a
+  *mismatched* RV is rejected with 409 and the Kubernetes conflict message
+  ("Operation cannot be fulfilled … the object has been modified").
+- Verified with a **state-changing** patch (a count bump) carrying a stale RV:
+  409, and the count change was *not* applied — the precondition rejects the
+  write, it does not apply-and-conflict.
+- A no-op patch does not bump the RV; only real modifications do.
+- Wrinkle: ngpc parses the RV as uint64, so a non-numeric RV gets HTTP **500**
+  (`strconv.ParseUint` failure), not 409/422 — the 400/422 fallback below
+  should never fire on this API, and a malformed RV fails closed through the
+  generic error path instead (502 to the caller, nothing applied). warden only
+  ever echoes RVs the API issued; `TestScaleNodePoolServerErrorStaysGeneric`
+  pins that classification.
 
-`TestConcurrentScaleNeverExceedsOrgCeiling` pins this: its fake upstream
+The 400/422 fallback stays as defense for a future upstream that rejects the
+RV-carrying patch shape outright (warden then retries once without the
+precondition and the ceiling rests on layer 1 alone, the topology-correct
+guarantee).
+
+`TestConcurrentScaleNeverExceedsOrgCeiling` pins layer 1: its fake upstream
 applies patches unconditionally (deliberately no server-side CAS — the
 worst-case upstream), and proves 20 concurrent individually-allowed requests
 never push the summed upper bounds past the cap, at any applied state or in
-the final state. Removing the single-flight mutex makes that test fail.
+the final state. Removing the single-flight mutex makes that test fail. Layer
+2's retry path is pinned by `TestScaleRetriesAfterConflictWithFreshSnapshot`,
+`TestScaleConflictExhaustedFailsClosed`, and
+`TestScaleConflictExhaustionAuditsDeny` (409 to the caller on exhaustion,
+with a final audited deny); the wire sequence they encode — 409 on a stale RV,
+then success on a fresh-RV patch — is what the live probe reproduced against
+the real API.
 
-Follow-up: verify against the live API whether list responses carry
-`resourceVersion` and whether patches honoring it return 409 on mismatch. If
-they never do, delete layer 2 and this note's conditional language.
+**Verified ≠ deployed:** the image currently running (`warden:0.1.0`, built
+before the fix) contains neither layer. Shipping the fixed binary is a
+separate rollout (declarative-config + new tag), deliberately not part of the
+verification.
 
 Any input warden cannot fully evaluate is denied:
 
