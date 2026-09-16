@@ -50,6 +50,20 @@ clusters, two boundaries compose:
 
 All `/v1` calls require a caller bearer token (`Authorization: Bearer <token>`).
 
+**Error contract:** decisions come back as JSON with an `allowed` boolean;
+transport/validation failures are plain text. Per-endpoint status codes,
+response bodies, and the full 403 reason catalog are in
+[`docs/notes/api.md`](docs/notes/api.md). In short:
+
+| Status | Meaning | Retry? |
+|--------|---------|--------|
+| `400` | Malformed body (`count` must be an integer) | no |
+| `401` | Missing/unknown caller token | no |
+| `403` | **Any** policy denial — uniform code, discriminated by the JSON `reason` string | not as-is |
+| `404` | Unknown pool (scale) | no — pools are created out-of-band |
+| `409` | Every optimistic-concurrency retry lost; nothing applied | yes, later |
+| `502` | Spot upstream failed or timed out | yes, later |
+
 **Scale semantics:** on a fixed pool, `count` sets `spec.desired` (the size). On
 an autoscaled pool it sets the autoscaler ceiling `spec.autoscaling.maxNodes` —
 never `desired`, which the upstream cluster-autoscaler owns and would revert,
@@ -58,6 +72,21 @@ and never `autoscaling.minNodes`. A `count` below the pool's current
 lower the floor out-of-band first. Scale-to-zero on an autoscaled pool
 (`minNodes: 0`) sets `maxNodes: 0` — the pool is paused, not deleted.
 
+## Configuration
+
+All configuration is `WARDEN_*` environment variables, read once at startup;
+invalid config exits `1` before listening. Required:
+`WARDEN_SPOT_REFRESH_TOKEN`, `WARDEN_ORG_NAMESPACE` (must start `org-`), and
+`WARDEN_CALLER_TOKENS`. Everything else defaults — org ceiling `10`, class
+`gp.vs1.medium-iad`, bid cap `0.01` (raised from an earlier documented `0.001`
+when Spot moved the floor; bead `warden-5787adc4`).
+
+The deployment pins the namespace to the dedicated `apexalgo-agent` org
+(`org-knyiltp8zznvkz5g`) and the class allowlist to the real pool's class
+(`ch.vs1.large-ord`) rather than the code default — the defaults-vs-deployed
+table, the full variable reference, and why the ceiling's accounting requires
+the single namespace are in [`docs/notes/configuration.md`](docs/notes/configuration.md).
+
 ## Structure
 
 - `cmd/warden/` — entrypoint
@@ -65,6 +94,6 @@ lower the floor out-of-band first. Scale-to-zero on an autoscaled pool
 - `internal/spot/` — Rackspace Spot API client + OAuth token manager
 - `internal/server/` — the intent API + caller auth + audit
 - `deploy/` — manifests staged for `declarative-config` (GitOps; not applied directly)
-- `docs/notes/` — security model, invariant policy
+- `docs/notes/` — security model, invariant policy, API error contract, configuration reference
 - `docs/research/` — Rackspace Spot API reference
 - `docs/plan/plan.md` — the complete plan
