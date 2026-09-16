@@ -27,6 +27,10 @@ type Config struct {
 	RequestTimeout       time.Duration
 }
 
+// env returns the environment variable's value, falling back to def when it
+// is empty — an empty value is indistinguishable from unset. List variables
+// therefore express "empty" via a value that splits to nothing (see
+// splitNonEmpty), not via "".
 func env(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v

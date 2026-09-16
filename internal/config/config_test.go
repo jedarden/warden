@@ -36,6 +36,9 @@ func TestLoadWithDefaults(t *testing.T) {
 	if cfg.MaxBidPrice != 0.01 {
 		t.Errorf("Expected MaxBidPrice 0.01, got %f", cfg.MaxBidPrice)
 	}
+	if len(cfg.AllowedServerClasses) != 1 || cfg.AllowedServerClasses[0] != "gp.vs1.medium-iad" {
+		t.Errorf("Expected default AllowedServerClasses [gp.vs1.medium-iad], got %v", cfg.AllowedServerClasses)
+	}
 	if cfg.RequestTimeout != 30*time.Second {
 		t.Errorf("Expected RequestTimeout 30s, got %v", cfg.RequestTimeout)
 	}
@@ -176,27 +179,27 @@ func TestLoadInvalidNumericValues(t *testing.T) {
 	os.Setenv("WARDEN_CALLER_TOKENS", "token1")
 
 	tests := []struct {
-		name     string
-		envKey   string
-		envValue string
+		name        string
+		envKey      string
+		envValue    string
 		errorSubstr string
 	}{
 		{
-			name:     "invalid max nodes",
-			envKey:   "WARDEN_MAX_TOTAL_NODES",
-			envValue: "not-a-number",
+			name:        "invalid max nodes",
+			envKey:      "WARDEN_MAX_TOTAL_NODES",
+			envValue:    "not-a-number",
 			errorSubstr: "WARDEN_MAX_TOTAL_NODES",
 		},
 		{
-			name:     "invalid bid price",
-			envKey:   "WARDEN_MAX_BID_PRICE",
-			envValue: "not-a-float",
+			name:        "invalid bid price",
+			envKey:      "WARDEN_MAX_BID_PRICE",
+			envValue:    "not-a-float",
 			errorSubstr: "WARDEN_MAX_BID_PRICE",
 		},
 		{
-			name:     "invalid timeout",
-			envKey:   "WARDEN_REQUEST_TIMEOUT",
-			envValue: "not-a-duration",
+			name:        "invalid timeout",
+			envKey:      "WARDEN_REQUEST_TIMEOUT",
+			envValue:    "not-a-duration",
 			errorSubstr: "WARDEN_REQUEST_TIMEOUT",
 		},
 	}
@@ -235,7 +238,9 @@ func TestLoadEmptyAllowedClasses(t *testing.T) {
 	os.Setenv("WARDEN_SPOT_REFRESH_TOKEN", "token")
 	os.Setenv("WARDEN_ORG_NAMESPACE", "org-test")
 	os.Setenv("WARDEN_CALLER_TOKENS", "token1")
-	os.Setenv("WARDEN_ALLOWED_SERVER_CLASSES", "")
+	// env() treats an empty value as unset, so "" selects the default
+	// allowlist; an EMPTY allowlist needs a value that splits to nothing.
+	os.Setenv("WARDEN_ALLOWED_SERVER_CLASSES", ",")
 
 	_, err := Load()
 	if err == nil {
