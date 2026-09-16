@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +20,26 @@ import (
 
 // ErrNotFound is returned when a named node pool does not exist.
 var ErrNotFound = fmt.Errorf("not found")
+
+// ErrConflict wraps every error from a patch whose resourceVersion
+// precondition did not match current upstream state (HTTP 409). Callers must
+// treat it as "the snapshot this decision was made against is stale": re-read
+// and re-decide, never apply the stale decision.
+var ErrConflict = errors.New("conflict")
+
+// ErrPreconditionRejected wraps errors from a patch the upstream refused
+// outright (HTTP 400/422) while carrying a resourceVersion — i.e. the API
+// rejected the precondition-carrying patch shape, not the count itself. The
+// server responds by retrying the patch without the precondition (see
+// docs/notes/invariant-policy.md, "Concurrency").
+var ErrPreconditionRejected = errors.New("precondition rejected")
+
+// IsConflict reports whether err came from a lost optimistic-concurrency race.
+func IsConflict(err error) bool { return errors.Is(err, ErrConflict) }
+
+// IsPreconditionRejected reports whether err came from the upstream refusing
+// a resourceVersion-carrying patch shape.
+func IsPreconditionRejected(err error) bool { return errors.Is(err, ErrPreconditionRejected) }
 
 type Client struct {
 	baseURL      string
@@ -171,12 +192,22 @@ func (c *Client) GetNodePool(ctx context.Context, ns, name string) (*NodePool, e
 // minNodes (policy denies counts below the floor; see docs/notes/
 // invariant-policy.md, "Scale semantics"). serverClass and bidPrice are never
 // included in the patch, so they cannot change through warden.
-func (c *Client) ScaleNodePool(ctx context.Context, ns, name string, count int, autoscaled bool) error {
-	var patch map[string]any
+// expectedResourceVersion carries the resourceVersion from the snapshot the
+// scale decision was made against. When non-empty it is echoed in the patch's
+// metadata, which on APIs with Kubernetes semantics makes the patch an
+// optimistic-concurrency check: a mismatch is rejected with 409 (surfaced as
+// ErrConflict) instead of silently overwriting the newer state. When the
+// snapshot has no resourceVersion, none is sent and the patch is unconditional.
+func (c *Client) ScaleNodePool(ctx context.Context, ns, name string, count int, autoscaled bool, expectedResourceVersion string) error {
+	var spec map[string]any
 	if autoscaled {
-		patch = map[string]any{"spec": map[string]any{"autoscaling": map[string]any{"maxNodes": count}}}
+		spec = map[string]any{"autoscaling": map[string]any{"maxNodes": count}}
 	} else {
-		patch = map[string]any{"spec": map[string]any{"desired": count}}
+		spec = map[string]any{"desired": count}
+	}
+	patch := map[string]any{"spec": spec}
+	if expectedResourceVersion != "" {
+		patch["metadata"] = map[string]any{"resourceVersion": expectedResourceVersion}
 	}
 	body, err := json.Marshal(patch)
 	if err != nil {
@@ -188,6 +219,12 @@ func (c *Client) ScaleNodePool(ctx context.Context, ns, name string, count int, 
 		return err
 	}
 	if status < 200 || status >= 300 {
+		switch {
+		case status == http.StatusConflict:
+			return fmt.Errorf("patch spotnodepool: %w: status %d: %s", ErrConflict, status, truncate(rb))
+		case (status == http.StatusBadRequest || status == http.StatusUnprocessableEntity) && expectedResourceVersion != "":
+			return fmt.Errorf("patch spotnodepool: %w: status %d: %s", ErrPreconditionRejected, status, truncate(rb))
+		}
 		return fmt.Errorf("patch spotnodepool: status %d: %s", status, truncate(rb))
 	}
 	return nil

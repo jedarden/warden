@@ -3,6 +3,7 @@ package spot
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -92,8 +93,8 @@ func TestNodePoolUpperBound(t *testing.T) {
 
 func TestAutoscaled(t *testing.T) {
 	tests := []struct {
-		name      string
-		pool      NodePool
+		name       string
+		pool       NodePool
 		autoscaled bool
 	}{
 		{
@@ -119,8 +120,8 @@ func TestAutoscaled(t *testing.T) {
 			autoscaled: false,
 		},
 		{
-			name:      "no autoscaling struct",
-			pool:      NodePool{Spec: NodePoolSpec{}},
+			name:       "no autoscaling struct",
+			pool:       NodePool{Spec: NodePoolSpec{}},
 			autoscaled: false,
 		},
 		{
@@ -281,10 +282,10 @@ func TestAccessTokenCaching(t *testing.T) {
 		// Return valid token response
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"access_token":  "test-access-token",
-			"id_token":      "test-id-token",
-			"token_type":    "Bearer",
-			"expires_in":    3600,
+			"access_token": "test-access-token",
+			"id_token":     "test-id-token",
+			"token_type":   "Bearer",
+			"expires_in":   3600,
 		})
 	}))
 	defer server.Close()
@@ -537,7 +538,7 @@ func TestScaleNodePool(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			receivedPatch = nil
-			err := c.ScaleNodePool(ctx, "org-test", "test-pool", tt.count, tt.autoscaled)
+			err := c.ScaleNodePool(ctx, "org-test", "test-pool", tt.count, tt.autoscaled, "")
 			if err != nil {
 				t.Fatalf("ScaleNodePool failed: %v", err)
 			}
@@ -546,6 +547,98 @@ func TestScaleNodePool(t *testing.T) {
 			}
 			tt.validate(t)
 		})
+	}
+}
+
+// TestScaleNodePoolResourceVersionPrecondition verifies the optimistic-
+// concurrency wiring: the snapshot's resourceVersion is echoed in the patch's
+// metadata when present, and no metadata is sent when there is none.
+func TestScaleNodePoolResourceVersionPrecondition(t *testing.T) {
+	var receivedPatch map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPatch = nil
+		if err := json.NewDecoder(r.Body).Decode(&receivedPatch); err != nil {
+			t.Fatalf("Failed to decode patch: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, "http://auth", "client", "refresh", 30*time.Second)
+	c.token = "mock-token"
+	c.expires = time.Now().Add(1 * time.Hour)
+	ctx := context.Background()
+
+	tests := []struct {
+		name     string
+		rv       string
+		expected any // expected metadata map, or nil for absent
+	}{
+		{name: "with resourceVersion", rv: "rv-42", expected: map[string]any{"resourceVersion": "rv-42"}},
+		{name: "without resourceVersion", rv: "", expected: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := c.ScaleNodePool(ctx, "org-test", "test-pool", 5, false, tt.rv); err != nil {
+				t.Fatalf("ScaleNodePool failed: %v", err)
+			}
+			meta, present := receivedPatch["metadata"]
+			if tt.expected == nil {
+				if present {
+					t.Errorf("Expected no metadata in patch, got %v", meta)
+				}
+				return
+			}
+			if !present {
+				t.Fatalf("Expected metadata %v in patch, got none", tt.expected)
+			}
+			// fmt.Sprint renders maps with sorted keys, so this is an
+			// order-independent equality check.
+			if fmt.Sprint(meta) != fmt.Sprint(tt.expected) {
+				t.Errorf("Expected metadata %v, got %v", tt.expected, meta)
+			}
+		})
+	}
+}
+
+// TestScaleNodePoolConflictError verifies a 409 on the patch surfaces as an
+// ErrConflict the server can branch on.
+func TestScaleNodePoolConflictError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, "http://auth", "client", "refresh", 30*time.Second)
+	c.token = "mock-token"
+	c.expires = time.Now().Add(1 * time.Hour)
+
+	err := c.ScaleNodePool(context.Background(), "org-test", "test-pool", 5, false, "rv-1")
+	if !IsConflict(err) {
+		t.Errorf("Expected ErrConflict for status 409, got %v", err)
+	}
+}
+
+// TestScaleNodePoolPreconditionRejectedError verifies a 422 on an
+// RV-carrying patch surfaces as ErrPreconditionRejected.
+func TestScaleNodePoolPreconditionRejectedError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, "http://auth", "client", "refresh", 30*time.Second)
+	c.token = "mock-token"
+	c.expires = time.Now().Add(1 * time.Hour)
+
+	err := c.ScaleNodePool(context.Background(), "org-test", "test-pool", 5, false, "rv-1")
+	if !IsPreconditionRejected(err) {
+		t.Errorf("Expected ErrPreconditionRejected for status 422 with RV, got %v", err)
+	}
+	if IsConflict(err) {
+		t.Error("422 must not be classified as a conflict")
 	}
 }
 
@@ -570,7 +663,7 @@ func TestScaleNodePoolToZero(t *testing.T) {
 	c.expires = time.Now().Add(1 * time.Hour)
 
 	ctx := context.Background()
-	err := c.ScaleNodePool(ctx, "org-test", "test-pool", 0, false)
+	err := c.ScaleNodePool(ctx, "org-test", "test-pool", 0, false, "")
 	if err != nil {
 		t.Fatalf("ScaleNodePool to zero failed: %v", err)
 	}

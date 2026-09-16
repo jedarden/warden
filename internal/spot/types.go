@@ -20,6 +20,13 @@ type NodePool struct {
 type Metadata struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
+	// ResourceVersion is the upstream object's revision string. Echoed back in
+	// a patch it acts as an optimistic-concurrency precondition on APIs with
+	// Kubernetes semantics (409 on mismatch) — see ScaleNodePool. It is
+	// optional metadata: warden does not depend on it for correctness, only
+	// uses it when the upstream provides one. (Recorded live ngpc API samples
+	// do not include it — see docs/notes/invariant-policy.md "Concurrency".)
+	ResourceVersion string `json:"resourceVersion,omitempty"`
 }
 
 type NodePoolSpec struct {

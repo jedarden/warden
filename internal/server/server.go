@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"git.ardenone.com/jedarden/warden/internal/audit"
@@ -26,6 +27,14 @@ type Server struct {
 	tokens    map[string]string // sha256(token) hex -> caller fingerprint
 	log       *slog.Logger
 	timeout   time.Duration
+
+	// scaleMu single-flights scale handling: the org-wide ceiling is checked
+	// against a snapshot of every pool and then applied, so the whole
+	// read→evaluate→write sequence must be serialized or two concurrent
+	// requests could both pass against the same snapshot and both land,
+	// breaching MAX_TOTAL_NODES. One mutex for all pools — the invariant is
+	// org-wide, so even scales of different pools race each other.
+	scaleMu sync.Mutex
 }
 
 func New(namespace string, pol policy.Config, sc *spot.Client, callerTokens []string, log *slog.Logger, timeout time.Duration) *Server {
@@ -115,6 +124,10 @@ type scaleReq struct {
 	Count int `json:"count"`
 }
 
+// maxScaleAttempts bounds the optimistic-concurrency retry loop: one planned
+// attempt plus up to three re-decisions after a lost race.
+const maxScaleAttempts = 4
+
 func (s *Server) scalePool(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var req scaleReq
@@ -125,40 +138,93 @@ func (s *Server) scalePool(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
 	defer cancel()
 
-	// Read-before-write: the org-wide cap can only be enforced against the full
-	// current set of pools, so we always list before deciding.
-	pools, err := s.spot.ListNodePools(ctx, s.namespace)
-	if err != nil {
-		s.log.Error("scale: list pools", "err", err)
-		http.Error(w, "upstream error", http.StatusBadGateway)
-		return
-	}
-	var target *spot.NodePool
-	for i := range pools {
-		if pools[i].Metadata.Name == name {
-			target = &pools[i]
-			break
+	// Single-flight around the ENTIRE read→evaluate→write sequence. The cap is
+	// evaluated against a snapshot and then applied; without the mutex two
+	// concurrent requests could both pass against the same snapshot and both
+	// apply, leaving the summed upper bounds above the org ceiling — the one
+	// guarantee warden exists to enforce. Held across retries too: a retry
+	// re-decides against fresh state and must not itself be raced.
+	s.scaleMu.Lock()
+	defer s.scaleMu.Unlock()
+
+	for attempt := 1; ; attempt++ {
+		// Read-before-write: the org-wide cap can only be enforced against the
+		// full current set of pools, so we always list before deciding.
+		// Every iteration audits its own decision, so a retried request leaves
+		// one audit entry per re-decision, not one per request.
+		pools, err := s.spot.ListNodePools(ctx, s.namespace)
+		if err != nil {
+			s.log.Error("scale: list pools", "err", err)
+			http.Error(w, "upstream error", http.StatusBadGateway)
+			return
+		}
+		var target *spot.NodePool
+		for i := range pools {
+			if pools[i].Metadata.Name == name {
+				target = &pools[i]
+				break
+			}
+		}
+		if target == nil {
+			audit.Log(s.log, audit.Entry{CallerID: caller(r), RemoteAddr: audit.RemoteAddr(r), Action: "scale", Pool: name, Count: req.Count, Allowed: false, Reason: "pool not found"})
+			http.Error(w, "pool not found", http.StatusNotFound)
+			return
+		}
+
+		decision := s.pol.EvaluateScale(*target, req.Count, pools)
+		audit.Log(s.log, audit.Entry{CallerID: caller(r), RemoteAddr: audit.RemoteAddr(r), Action: "scale", Pool: name, Count: req.Count, Allowed: decision.Allow, Reason: decision.Reason})
+		if !decision.Allow {
+			writeJSON(w, http.StatusForbidden, map[string]any{"allowed": false, "reason": decision.Reason})
+			return
+		}
+
+		// Apply, carrying the snapshot's resourceVersion as an
+		// optimistic-concurrency precondition: on APIs with Kubernetes
+		// semantics a mismatch is rejected with 409, which means the state this
+		// decision was made against is stale and must be re-read, never
+		// applied over. (In-process this cannot fire — the mutex above
+		// serializes us — so a 409 always means an out-of-band writer.)
+		err = s.spot.ScaleNodePool(ctx, s.namespace, name, req.Count, target.Autoscaled(), target.Metadata.ResourceVersion)
+		if err == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"allowed": true, "pool": name, "count": req.Count, "reason": decision.Reason})
+			return
+		}
+		switch {
+		case spot.IsConflict(err) && attempt < maxScaleAttempts:
+			// Another writer changed the pool between our snapshot and the
+			// patch. Re-list and re-decide against the new state: the request
+			// may now exceed the cap, and must then be denied.
+			s.log.Warn("scale: pool changed concurrently, re-evaluating against fresh state",
+				"pool", name, "attempt", attempt, "err", err)
+			continue
+		case spot.IsConflict(err):
+			// Fail closed: every retry lost the race, so no ceiling-checked
+			// write ever landed.
+			s.log.Error("scale: conflict on every attempt, denying", "pool", name, "attempts", attempt, "err", err)
+			audit.Log(s.log, audit.Entry{CallerID: caller(r), RemoteAddr: audit.RemoteAddr(r), Action: "scale", Pool: name, Count: req.Count, Allowed: false, Reason: "pool changed concurrently on every attempt; request not applied"})
+			writeJSON(w, http.StatusConflict, map[string]any{"allowed": false, "reason": "pool changed concurrently on every attempt; retry later"})
+			return
+		case spot.IsPreconditionRejected(err) && target.Metadata.ResourceVersion != "":
+			// The upstream refused the resourceVersion-carrying patch shape
+			// outright (behavior not verifiable from the dev box — see
+			// docs/notes/invariant-policy.md "Concurrency"). Retry once without
+			// the precondition: the patch itself is unchanged and
+			// single-flight still guards the ceiling in-process.
+			s.log.Warn("scale: upstream rejected resourceVersion precondition, retrying patch without it",
+				"pool", name, "err", err)
+			if err := s.spot.ScaleNodePool(ctx, s.namespace, name, req.Count, target.Autoscaled(), ""); err != nil {
+				s.log.Error("scale: apply", "pool", name, "err", err)
+				http.Error(w, "upstream error applying scale", http.StatusBadGateway)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"allowed": true, "pool": name, "count": req.Count, "reason": decision.Reason})
+			return
+		default:
+			s.log.Error("scale: apply", "pool", name, "err", err)
+			http.Error(w, "upstream error applying scale", http.StatusBadGateway)
+			return
 		}
 	}
-	if target == nil {
-		audit.Log(s.log, audit.Entry{CallerID: caller(r), RemoteAddr: audit.RemoteAddr(r), Action: "scale", Pool: name, Count: req.Count, Allowed: false, Reason: "pool not found"})
-		http.Error(w, "pool not found", http.StatusNotFound)
-		return
-	}
-
-	decision := s.pol.EvaluateScale(*target, req.Count, pools)
-	audit.Log(s.log, audit.Entry{CallerID: caller(r), RemoteAddr: audit.RemoteAddr(r), Action: "scale", Pool: name, Count: req.Count, Allowed: decision.Allow, Reason: decision.Reason})
-	if !decision.Allow {
-		writeJSON(w, http.StatusForbidden, map[string]any{"allowed": false, "reason": decision.Reason})
-		return
-	}
-
-	if err := s.spot.ScaleNodePool(ctx, s.namespace, name, req.Count, target.Autoscaled()); err != nil {
-		s.log.Error("scale: apply", "pool", name, "err", err)
-		http.Error(w, "upstream error applying scale", http.StatusBadGateway)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"allowed": true, "pool": name, "count": req.Count, "reason": decision.Reason})
 }
 
 func bearer(r *http.Request) string {

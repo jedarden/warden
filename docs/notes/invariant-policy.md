@@ -39,7 +39,52 @@ it out-of-band and retry. Scale-to-zero on an autoscaled pool therefore requires
 `minNodes = 0` and means `maxNodes = 0`: the autoscaler may not add nodes (the
 pool is paused), not that anything is deleted.
 
-## Fail-closed
+## Concurrency — the ceiling cannot be raced (decided 2026-09-16, bead `warden-d76280fb`)
+
+The ceiling is evaluated read-before-write: list every pool, sum upper bounds,
+then patch. Taken naively that is a TOCTOU window — two concurrent scale
+requests could both pass against the same snapshot and both apply, leaving the
+summed upper bounds above `MAX_TOTAL_NODES`, the one guarantee warden exists to
+enforce. The window is closed by two layers:
+
+1. **Single-flight (primary mechanism).** The whole read→evaluate→write
+   sequence in `scalePool` runs under one per-instance mutex. One mutex for all
+   pools, not per-pool: the invariant is org-wide, so even scales of *different*
+   pools race each other. This alone is sufficient for the deployed topology —
+   the Deployment runs `replicas: 1` and warden holds the org's only Spot
+   credential, so every write to the org flows through that mutex.
+
+2. **`resourceVersion` precondition (defense in depth).** The outbound patch
+   echoes the snapshot's `metadata.resourceVersion`. On APIs with Kubernetes
+   semantics this is an optimistic-concurrency check: a mismatch is rejected
+   with 409, meaning the state the decision was made against is stale. On 409
+   warden re-lists, re-evaluates against the fresh state (the request may
+   now exceed the cap and is then denied), and retries — one planned attempt
+   plus up to three re-decisions (`maxScaleAttempts`). If every attempt loses
+   the race, warden fails closed: 409 to the caller, nothing applied, audited
+   as a deny.
+
+**Verified status of layer 2:** whether the Spot ngpc API exposes
+`resourceVersion` and honors it in merge patches is *not verified live* — no
+credentialed probe was possible from the dev box (2026-09-16), and the recorded
+live-response samples do not include it. Therefore:
+
+- If the upstream ignores the precondition, it is harmless dead weight; layer 1
+  still enforces the ceiling.
+- If the upstream *rejects* an RV-carrying patch shape outright (400/422),
+  warden logs a warning and retries the identical patch once without the
+  precondition rather than failing every scale. The ceiling then rests on
+  layer 1 alone, which is the topology-correct guarantee.
+
+`TestConcurrentScaleNeverExceedsOrgCeiling` pins this: its fake upstream
+applies patches unconditionally (deliberately no server-side CAS — the
+worst-case upstream), and proves 20 concurrent individually-allowed requests
+never push the summed upper bounds past the cap, at any applied state or in
+the final state. Removing the single-flight mutex makes that test fail.
+
+Follow-up: verify against the live API whether list responses carry
+`resourceVersion` and whether patches honoring it return 409 on mismatch. If
+they never do, delete layer 2 and this note's conditional language.
 
 Any input warden cannot fully evaluate is denied:
 
