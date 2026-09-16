@@ -16,10 +16,11 @@ callers we don't fully trust, without ever handing them that token.
    because it isn't in this token's org.
 
 2. **Credential separation (primary control).** The Spot refresh token lives
-   only inside warden (env from a SealedSecret). Agents never possess it. On
-   bare-metal agent hosts (EX44, lab) there is no NetworkPolicy to rely on, so
-   this — not the network — is what prevents agents calling Spot directly: they
-   simply don't have a Spot credential.
+   only inside warden (env from an ExternalSecret sourced from rs-manager's
+   in-cluster OpenBao — rs-manager has no SealedSecrets controller). Agents
+   never possess it. On bare-metal agent hosts (codinghome, lab) there is no
+   NetworkPolicy to rely on, so this — not the network — is what prevents agents
+   calling Spot directly: they simply don't have a Spot credential.
 
 3. **Intent API, not passthrough (fail closed by construction).** warden does
    not forward arbitrary caller requests. It exposes `list` and
@@ -33,9 +34,10 @@ callers we don't fully trust, without ever handing them that token.
    the org total is evaluated against the live set of pools. See
    `invariant-policy.md`.
 
-5. **Network isolation (defense in depth).** warden runs in rs-manager and is
-   reachable only over the cluster's single Tailscale/Traefik ingress — never
-   the public internet.
+5. **Network isolation (defense in depth).** warden runs in rs-manager (the
+   `warden` namespace, deployed since 2026-07-30 — same status as README) and is
+   reachable only over the cluster's Tailscale/Traefik `vpn` entrypoint
+   (`warden-rs-manager.ardenone.com:8444`) — never the public internet.
 
 6. **Audit.** Every decision, allow or deny, is logged with the caller
    fingerprint, action, pool, count, and reason.

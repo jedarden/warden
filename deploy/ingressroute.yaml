@@ -10,8 +10,14 @@ spec:
   secretName: warden-tls
   duration: 2160h
   renewBefore: 360h
+  # letsencrypt-cloudflare is the issuer every other rs-manager vpn-entrypoint
+  # service uses (argocd, openbao). This Certificate originally referenced
+  # `ardenone-ca-issuer`, a ClusterIssuer that does not exist on rs-manager --
+  # so it sat Ready=False / "Issuing certificate as Secret does not exist" from
+  # 2026-07-30 to 2026-08-23 and Traefik served the route on its default cert.
+  # Issuer fix verified live 2026-09-16: certificate warden-tls Ready=True.
   issuerRef:
-    name: ardenone-ca-issuer
+    name: letsencrypt-cloudflare
     kind: ClusterIssuer
   commonName: "warden-rs-manager.ardenone.com"
   dnsNames:

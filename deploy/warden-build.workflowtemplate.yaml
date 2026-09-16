@@ -12,6 +12,13 @@ metadata:
   labels:
     app: warden-build
 spec:
+  # Backstop against a run that hangs before its pod ever starts (unbound
+  # PVC, unschedulable, missing secret). Per-step activeDeadlineSeconds does
+  # not cover that case: on 2026-08-07 five needle-ci runs sat Running for
+  # 8h against a 3600s step limit. ttlStrategy only reaps COMPLETED runs, so
+  # without a workflow-level cap they are never terminated and never GCd.
+  # Basis: sum of per-step deadlines x attempts = 2820s, +50% headroom.
+  activeDeadlineSeconds: 7200
   entrypoint: build
   serviceAccountName: argo-workflow
   arguments:
@@ -82,7 +89,6 @@ spec:
           - --context=git://{{workflow.parameters.git-repo}}.git#refs/heads/{{workflow.parameters.branch}}
           - --dockerfile=Dockerfile
           - --destination=ronaldraygun/warden:{{inputs.parameters.version}}
-          - --destination=ronaldraygun/warden:latest
         env:
           - name: GIT_USERNAME
             value: x-token

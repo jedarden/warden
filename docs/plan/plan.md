@@ -50,7 +50,7 @@ NEEDLE workers / autoscaler          warden (in rs-manager, tailnet-only)       
 
 ## Components
 
-- `internal/config` — env-driven config + validation (secrets via SealedSecret).
+- `internal/config` — env-driven config + validation (secrets via ExternalSecret from OpenBao).
 - `internal/spot` — Spot API client, OAuth refresh-token manager (cached,
   auto-refreshed), list/get/scale of SpotNodePools.
 - `internal/policy` — pure enforcement core: `EvaluateScale` applies class
@@ -59,7 +59,7 @@ NEEDLE workers / autoscaler          warden (in rs-manager, tailnet-only)       
   constant-time caller-token auth, audit logging.
 - `internal/audit` — structured decision log (allow + deny).
 - `cmd/warden` — wiring + graceful shutdown.
-- `deploy/` — manifests staged for `declarative-config`.
+- `deploy/` — manifests for the rs-manager deployment; landed in `declarative-config` and live since 2026-07-30.
 
 ## Data models
 
@@ -95,8 +95,8 @@ create/delete cloudspace, change server class, change bid.
 
 ## Security model
 
-- Spot token held only by warden, from a tailnet-served SealedSecret in
-  rs-manager; agents authenticate with a separate, narrow caller token that
+- Spot token held only by warden, from an ExternalSecret sourced from
+  rs-manager's in-cluster OpenBao; agents authenticate with a separate, narrow caller token that
   grants nothing but bounded intent calls.
 - Caller tokens compared in constant time against sha256 digests; never logged.
 - Deploy is non-root, read-only rootfs, all caps dropped.
@@ -109,13 +109,15 @@ See `docs/notes/security-model.md`.
 
 - [x] Phase 1: Enforcement core (policy engine + tests), Spot client, intent API,
       audit, config. Builds, vets, tests green.
-- [ ] Phase 2: Wire the real refresh token via SealedSecret. (Field-name
-      verification against the live org CRD is done — 2026-07-27 probe, see
-      `docs/research/rackspace-spot-api.md`; live confirmation of the
-      autoscaling min/max fields is tracked in bead `warden-9abf320c`.)
-- [ ] Phase 3: Containerize (Argo `warden-build` WorkflowTemplate → `ronaldraygun/warden`,
-      pinned digest) and deploy via `declarative-config` (`k8s/rs-manager/warden/`),
-      tailnet-only IngressRoute.
+- [x] Phase 2: Wire the real refresh token — done via ExternalSecret from
+      rs-manager's OpenBao (`warden-spot-credentials`, SecretSynced verified
+      2026-08-23). (Field-name verification against the live org CRD is done —
+      2026-07-27 probe, see `docs/research/rackspace-spot-api.md`; live
+      confirmation of the autoscaling min/max fields is tracked in bead
+      `warden-9abf320c`.)
+- [x] Phase 3: Containerize (Argo `warden-build` WorkflowTemplate → `ronaldraygun/warden`,
+      pinned semver tag) and deploy via `declarative-config` (`k8s/rs-manager/warden/`),
+      tailnet-only IngressRoute — live 2026-07-30, image `ronaldraygun/warden:0.1.0`.
 - [ ] Phase 4: Point a deterministic autoscaler (or the NEEDLE dispatcher) at
       warden; confirm scale-up / scale-to-zero end to end against a real pool.
 - [ ] Phase 5: Preemption-safety in the workers (release bead + clean worktree

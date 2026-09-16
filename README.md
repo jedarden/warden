@@ -93,7 +93,7 @@ the single namespace are in [`docs/notes/configuration.md`](docs/notes/configura
 - `internal/policy/` — the enforcement core (pure, exhaustively tested)
 - `internal/spot/` — Rackspace Spot API client + OAuth token manager
 - `internal/server/` — the intent API + caller auth + audit
-- `deploy/` — manifests staged for `declarative-config` (GitOps; not applied directly)
+- `deploy/` — manifests for the rs-manager deployment, **live since 2026-07-30** (image `ronaldraygun/warden:0.1.0`, reachable at `warden-rs-manager.ardenone.com:8444` over the tailnet). Source of truth is `declarative-config` at `k8s/rs-manager/warden/`, synced by ArgoCD Application `warden-ns-rs-manager`; this copy is a staging mirror — never applied with `kubectl` directly
 - `docs/notes/` — security model, invariant policy, API error contract, configuration reference
 - `docs/research/` — Rackspace Spot API reference
 - `docs/plan/plan.md` — the complete plan
