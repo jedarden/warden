@@ -45,6 +45,12 @@ func allow(format string, a ...any) Decision {
 // given every current pool in the org (used for the org-wide total). It fails
 // closed: any out-of-envelope or unparseable input is denied.
 //
+// "count" means the pool's size for a fixed pool and its autoscaler ceiling
+// (autoscaling.maxNodes) for an autoscaled one — see docs/notes/
+// invariant-policy.md, "Scale semantics". Counts below an autoscaled pool's
+// minNodes are denied: warden never writes minNodes, so such a request cannot
+// be expressed without inverting the autoscaling window.
+//
 // Note the operations this policy makes impossible by construction, because the
 // intent API that feeds it exposes no field for them: creating or deleting a
 // pool or cloudspace, changing a pool's server class, and changing its bid.
@@ -52,6 +58,15 @@ func allow(format string, a ...any) Decision {
 func (c Config) EvaluateScale(target spot.NodePool, count int, all []spot.NodePool) Decision {
 	if count < 0 {
 		return deny("count must be >= 0, got %d", count)
+	}
+	// Autoscaled targets scale by ceiling: the request sets autoscaling.maxNodes
+	// only. warden never writes desired (the upstream cluster-autoscaler owns
+	// it) and never writes minNodes, so a count below the pool's current floor
+	// would leave an inverted minNodes > maxNodes window — deny rather than
+	// co-adjust the floor silently. Lower minNodes out-of-band and retry.
+	if target.Autoscaled() && count < target.Spec.Autoscaling.MinNodes {
+		return deny("count %d is below autoscaling minNodes %d; warden sets maxNodes only and will not lower minNodes",
+			count, target.Spec.Autoscaling.MinNodes)
 	}
 	if !c.AllowedServerClasses[target.Spec.ServerClass] {
 		return deny("server class %q is not in the allowlist", target.Spec.ServerClass)
@@ -80,6 +95,11 @@ func (c Config) EvaluateScale(target spot.NodePool, count int, all []spot.NodePo
 	}
 	if total > c.MaxTotalNodes {
 		return deny("request would bring org node ceiling to %d, exceeding cap of %d", total, c.MaxTotalNodes)
+	}
+	if target.Autoscaled() {
+		// The audit record should name what was actually patched: the ceiling,
+		// not a size the cluster-autoscaler would immediately re-derive.
+		return allow("scale %q ceiling (maxNodes) to %d (org ceiling %d/%d)", target.Metadata.Name, count, total, c.MaxTotalNodes)
 	}
 	return allow("scale %q to %d (org ceiling %d/%d)", target.Metadata.Name, count, total, c.MaxTotalNodes)
 }

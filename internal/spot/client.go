@@ -164,9 +164,13 @@ func (c *Client) GetNodePool(ctx context.Context, ns, name string) (*NodePool, e
 }
 
 // ScaleNodePool sets the node count on an existing pool. warden constructs the
-// merge-patch itself, touching ONLY the count field (desiredCount for fixed
-// pools, autoscaling.maxNodes for autoscaled pools). serverClass and bidPrice
-// are never included in the patch, so they cannot change through warden.
+// merge-patch itself, touching ONLY the count field: spec.desired for fixed
+// pools, spec.autoscaling.maxNodes for autoscaled pools — the ceiling the
+// upstream cluster-autoscaler scales under. Never spec.desired on an autoscaled
+// pool (the autoscaler owns it and would fight a fixed count) and never
+// minNodes (policy denies counts below the floor; see docs/notes/
+// invariant-policy.md, "Scale semantics"). serverClass and bidPrice are never
+// included in the patch, so they cannot change through warden.
 func (c *Client) ScaleNodePool(ctx context.Context, ns, name string, count int, autoscaled bool) error {
 	var patch map[string]any
 	if autoscaled {

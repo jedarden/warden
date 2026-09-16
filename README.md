@@ -33,6 +33,10 @@ clusters, two boundaries compose:
   that counts each pool's autoscaling max, not just its current size.
 - **Allowed server classes** only (default `gp.vs1.medium-iad`).
 - **Bid cap** (default `0.01`) — warden refuses to grow a pool bidding above it.
+- **Autoscaled pools scale by ceiling** — a scale request on an autoscaled pool
+  sets `autoscaling.maxNodes`, never `desired` (the upstream cluster-autoscaler
+  owns it and would fight a fixed count) and never `minNodes`; a count below the
+  pool's `minNodes` is denied. See `docs/notes/invariant-policy.md`.
 - **No create / delete / re-shape** — impossible by construction: the intent API
   exposes no field for them.
 
@@ -45,6 +49,14 @@ clusters, two boundaries compose:
 | `POST` | `/v1/pools/{name}/scale` | Set node count on an existing pool: `{"count": N}` |
 
 All `/v1` calls require a caller bearer token (`Authorization: Bearer <token>`).
+
+**Scale semantics:** on a fixed pool, `count` sets `spec.desired` (the size). On
+an autoscaled pool it sets the autoscaler ceiling `spec.autoscaling.maxNodes` —
+never `desired`, which the upstream cluster-autoscaler owns and would revert,
+and never `autoscaling.minNodes`. A `count` below the pool's current
+`autoscaling.minNodes` is denied (403), because it would invert the window;
+lower the floor out-of-band first. Scale-to-zero on an autoscaled pool
+(`minNodes: 0`) sets `maxNodes: 0` — the pool is paused, not deleted.
 
 ## Structure
 

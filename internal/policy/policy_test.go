@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"strings"
 	"testing"
 
 	"git.ardenone.com/jedarden/warden/internal/spot"
@@ -18,13 +19,13 @@ func fixedPool(name, class string, desired int, bid string) spot.NodePool {
 	}
 }
 
-func autoPool(name, class string, maxNodes int, bid string) spot.NodePool {
+func autoPool(name, class string, minNodes, maxNodes int, bid string) spot.NodePool {
 	return spot.NodePool{
 		Metadata: spot.Metadata{Name: name},
 		Spec: spot.NodePoolSpec{
 			ServerClass: class,
 			BidPrice:    bid,
-			Autoscaling: &spot.Autoscaling{Enabled: true, MaxNodes: maxNodes},
+			Autoscaling: &spot.Autoscaling{Enabled: true, MinNodes: minNodes, MaxNodes: maxNodes},
 		},
 	}
 }
@@ -95,13 +96,67 @@ func TestDenyUnparseableBidFailsClosed(t *testing.T) {
 
 func TestAutoscaledPoolCountsMaxNodes(t *testing.T) {
 	target := fixedPool("a", "gp.vs1.medium-iad", 0, "0.001")
-	auto := autoPool("b", "gp.vs1.medium-iad", 8, "0.001")
+	auto := autoPool("b", "gp.vs1.medium-iad", 0, 8, "0.001")
 	// target 3 + autoscaled ceiling 8 = 11 > 10 → deny
 	if d := cfg().EvaluateScale(target, 3, []spot.NodePool{target, auto}); d.Allow {
 		t.Fatal("expected deny: autoscaled pool contributes maxNodes=8")
 	}
 	// target 2 + 8 = 10 → allow
 	if d := cfg().EvaluateScale(target, 2, []spot.NodePool{target, auto}); !d.Allow {
+		t.Fatalf("expected allow at cap: %s", d.Reason)
+	}
+}
+
+// Scaling an autoscaled pool means setting its autoscaler ceiling: the count is
+// a maxNodes, never a desired (which the upstream cluster-autoscaler owns).
+func TestAutoscaledTargetScalesByCeiling(t *testing.T) {
+	target := autoPool("workers", "gp.vs1.medium-iad", 2, 8, "0.001")
+	d := cfg().EvaluateScale(target, 5, []spot.NodePool{target})
+	if !d.Allow {
+		t.Fatalf("expected allow within window, got deny: %s", d.Reason)
+	}
+	if !strings.Contains(d.Reason, "maxNodes") {
+		t.Fatalf("expected allow reason to name the ceiling semantics, got: %s", d.Reason)
+	}
+}
+
+// A count below the pool's minNodes would invert the autoscaling window; warden
+// sets maxNodes only and will not co-adjust the floor, so it fails closed.
+func TestDenyAutoscaledTargetBelowMinNodes(t *testing.T) {
+	target := autoPool("workers", "gp.vs1.medium-iad", 3, 8, "0.001")
+	if d := cfg().EvaluateScale(target, 2, []spot.NodePool{target}); d.Allow {
+		t.Fatal("expected deny below minNodes")
+	}
+	// Exactly at the floor is a valid (pinned) window.
+	if d := cfg().EvaluateScale(target, 3, []spot.NodePool{target}); !d.Allow {
+		t.Fatalf("expected allow at minNodes: %s", d.Reason)
+	}
+}
+
+// Scale-to-zero on an autoscaled pool pauses it (maxNodes=0) and is fine when
+// the floor is already zero — but a nonzero floor makes it an inversion.
+func TestAutoscaledTargetScaleToZeroRequiresZeroFloor(t *testing.T) {
+	zero := autoPool("workers", "gp.vs1.medium-iad", 0, 4, "0.001")
+	if d := cfg().EvaluateScale(zero, 0, []spot.NodePool{zero}); !d.Allow {
+		t.Fatalf("expected allow scale-to-zero with zero floor: %s", d.Reason)
+	}
+	floored := autoPool("workers", "gp.vs1.medium-iad", 1, 4, "0.001")
+	if d := cfg().EvaluateScale(floored, 0, []spot.NodePool{floored}); d.Allow {
+		t.Fatal("expected deny scale-to-zero below nonzero floor")
+	}
+}
+
+// The org cap counts an autoscaled target's requested ceiling, not its current
+// maxNodes — the accounting treats the scale as already applied.
+func TestAutoscaledTargetStillBoundByOrgCap(t *testing.T) {
+	target := autoPool("a", "gp.vs1.medium-iad", 0, 2, "0.001")
+	other := fixedPool("b", "gp.vs1.medium-iad", 7, "0.001")
+	// ceiling 4 + other bound 7 = 11 > 10 → deny even though 4 is a valid window
+	if d := cfg().EvaluateScale(target, 4, []spot.NodePool{target, other}); d.Allow {
+		t.Fatal("expected deny: new ceiling 4 + other bound 7 exceeds cap")
+	}
+	// 3 + 7 = 10 → allow
+	if d := cfg().EvaluateScale(target, 3, []spot.NodePool{target, other}); !d.Allow {
 		t.Fatalf("expected allow at cap: %s", d.Reason)
 	}
 }

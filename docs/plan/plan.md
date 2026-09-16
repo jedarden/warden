@@ -81,6 +81,10 @@ For a request to scale pool `P` to `count`:
 2. `P.serverClass ∈ allowlist` (default `{gp.vs1.medium-iad}`).
 3. `P.bidPrice <= maxBid` (default `0.01`); unparseable bid ⇒ deny.
 4. `count + Σ UpperBound(other pools) <= maxTotalNodes` (default `10`).
+5. Autoscaled target: `count >= P.autoscaling.minNodes` — warden patches
+   `autoscaling.maxNodes` only (never `desired`, never `minNodes`), so a lower
+   count would invert the window and is denied (see
+   `docs/notes/invariant-policy.md`, "Scale semantics").
 
 Impossible by construction (no endpoint / field): create pool, delete pool,
 create/delete cloudspace, change server class, change bid.
@@ -117,9 +121,11 @@ See `docs/notes/security-model.md`.
 ## Open questions
 
 - Exact SpotNodePool CRD field names (see Phase 2).
-- One pool per worker vs. one pool autoscaled 0..N — affects how "scale" maps to
-  intent calls and how preemption churns. Leaning autoscaled pool(s) with warden
-  capping `maxNodes`.
+- One pool per worker vs. one pool autoscaled 0..N — affects how preemption
+  churns. The scale-path half is decided (2026-09-16): autoscaled pools scale by
+  ceiling — "scale to N" patches `autoscaling.maxNodes`, never `desired`, and
+  counts below `minNodes` are denied (see `docs/notes/invariant-policy.md`,
+  "Scale semantics"). Topology is still open.
 - Does the deterministic autoscaler live in-cluster (rs-manager) or as a fleet
   process? Either way it holds only a caller token, never the Spot token.
 - Shared compile cache (sccache → B2/S3) for cold Rust builds on ephemeral nodes
