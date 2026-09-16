@@ -1,0 +1,22 @@
+title = "warden gitleaks config"
+
+[extend]
+useDefault = true
+
+# bead-rs auto-publishes every bead mutation into .beads/checkpoint/
+# (forensic.jsonl + objects/*.jsonl). Bead labels are stored as
+# {"key":"<name>","namespace":"<ns>","value":"<v>"}, and the generic-api-key
+# rule false-positives on the label NAME "phase7-activation" (the
+# warden->SEAM absorption tracking label, namespace seam-bead). The
+# checkpoint is machine-written and hand-editing it is prohibited, so an
+# inline gitleaks:allow annotation cannot live there; each allowlist entry
+# ANDs the exact literal with the checkpoint path, so nothing outside
+# .beads/ is exempted.
+#
+# Declared in the current [[allowlists]] array schema; the deprecated
+# singular [allowlist] form was rejected as unusable alongside it.
+
+[[allowlists]]
+description = '''machine-published bead checkpoint: label name "phase7-activation" under a JSON field literally named "key" is a label identifier, not a credential'''
+regexes = ['''"key":"phase7-activation"''']
+paths = ['''\.beads/''']
