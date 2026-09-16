@@ -20,7 +20,8 @@ callers we don't fully trust, without ever handing them that token.
    in-cluster OpenBao — rs-manager has no SealedSecrets controller). Agents
    never possess it. On bare-metal agent hosts (codinghome, lab) there is no
    NetworkPolicy to rely on, so this — not the network — is what prevents agents
-   calling Spot directly: they simply don't have a Spot credential.
+   calling Spot directly: they simply don't have a Spot credential. How the
+   token is obtained, stored, verified, and rotated: `spot-token-provisioning.md`.
 
 3. **Intent API, not passthrough (fail closed by construction).** warden does
    not forward arbitrary caller requests. It exposes `list` and
