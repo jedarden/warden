@@ -91,6 +91,80 @@ func TestNodePoolUpperBound(t *testing.T) {
 	}
 }
 
+// TestNodePoolLowerBound mirrors TestNodePoolUpperBound for the scale-request
+// floor: minNodes on an autoscaled pool, 0 on a fixed one (any non-negative
+// count is legal there). Counts below LowerBound are exactly what policy
+// denies with the below-minNodes reason.
+func TestNodePoolLowerBound(t *testing.T) {
+	tests := []struct {
+		name       string
+		pool       NodePool
+		lowerBound int
+	}{
+		{
+			name: "fixed pool with desired count",
+			pool: NodePool{
+				Spec: NodePoolSpec{
+					Desired: func() *int { i := 5; return &i }(),
+				},
+			},
+			lowerBound: 0,
+		},
+		{
+			name: "autoscaled pool with minNodes",
+			pool: NodePool{
+				Spec: NodePoolSpec{
+					Autoscaling: &Autoscaling{
+						Enabled:  true,
+						MinNodes: 2,
+						MaxNodes: 15,
+					},
+				},
+			},
+			lowerBound: 2,
+		},
+		{
+			name: "autoscaled pool with zero minNodes (scale-to-zero legal)",
+			pool: NodePool{
+				Spec: NodePoolSpec{
+					Autoscaling: &Autoscaling{
+						Enabled:  true,
+						MaxNodes: 10,
+					},
+				},
+			},
+			lowerBound: 0,
+		},
+		{
+			name: "autoscaling disabled but struct present",
+			pool: NodePool{
+				Spec: NodePoolSpec{
+					Autoscaling: &Autoscaling{
+						Enabled:  false,
+						MinNodes: 2,
+					},
+					Desired: func() *int { i := 3; return &i }(),
+				},
+			},
+			lowerBound: 0,
+		},
+		{
+			name:       "no desired, no autoscaling",
+			pool:       NodePool{Spec: NodePoolSpec{}},
+			lowerBound: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.pool.LowerBound()
+			if result != tt.lowerBound {
+				t.Errorf("Expected LowerBound %d, got %d", tt.lowerBound, result)
+			}
+		})
+	}
+}
+
 func TestAutoscaled(t *testing.T) {
 	tests := []struct {
 		name       string

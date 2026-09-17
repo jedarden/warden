@@ -110,12 +110,13 @@ func (s *Server) listPools(w http.ResponseWriter, r *http.Request) {
 		Name        string `json:"name"`
 		ServerClass string `json:"serverClass"`
 		BidPrice    string `json:"bidPrice"`
+		LowerBound  int    `json:"lowerBound"`
 		UpperBound  int    `json:"upperBound"`
 		Autoscaled  bool   `json:"autoscaled"`
 	}
 	out := make([]view, 0, len(pools))
 	for _, p := range pools {
-		out = append(out, view{p.Metadata.Name, p.Spec.ServerClass, p.Spec.BidPrice, p.UpperBound(), p.Autoscaled()})
+		out = append(out, view{p.Metadata.Name, p.Spec.ServerClass, p.Spec.BidPrice, p.LowerBound(), p.UpperBound(), p.Autoscaled()})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"pools": out, "cap": s.pol.MaxTotalNodes})
 }

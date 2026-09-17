@@ -45,7 +45,7 @@ clusters, two boundaries compose:
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET`  | `/healthz` | Liveness (no auth) |
-| `GET`  | `/v1/pools` | List pools with class, bid, node ceiling |
+| `GET`  | `/v1/pools` | List pools with class, bid, and the acceptable node-count window (`lowerBound`/`upperBound`) |
 | `POST` | `/v1/pools/{name}/scale` | Set node count on an existing pool: `{"count": N}` |
 
 All `/v1` calls require a caller bearer token (`Authorization: Bearer <token>`).
@@ -69,8 +69,10 @@ an autoscaled pool it sets the autoscaler ceiling `spec.autoscaling.maxNodes` �
 never `desired`, which the upstream cluster-autoscaler owns and would revert,
 and never `autoscaling.minNodes`. A `count` below the pool's current
 `autoscaling.minNodes` is denied (403), because it would invert the window;
-lower the floor out-of-band first. Scale-to-zero on an autoscaled pool
-(`minNodes: 0`) sets `maxNodes: 0` — the pool is paused, not deleted.
+lower the floor out-of-band first. That floor is visible to callers as
+`lowerBound` on `GET /v1/pools` (0 on a fixed pool), paired with `upperBound`
+— the count window the scale endpoint accepts. Scale-to-zero on an autoscaled
+pool (`minNodes: 0`) sets `maxNodes: 0` — the pool is paused, not deleted.
 
 ## Configuration
 

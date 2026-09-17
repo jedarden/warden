@@ -320,6 +320,71 @@ func TestScaleRequestParsing(t *testing.T) {
 	}
 }
 
+// TestListPoolsExposesScaleWindow pins the pool-list contract callers program
+// against: every pool carries lowerBound — the count floor below which a scale
+// request is denied (autoscaling.minNodes when autoscaled, 0 on a fixed pool)
+// — next to upperBound, so a caller can pick an acceptable count without
+// probing warden for the 403. Regression coverage for bead warden-db1e5d95:
+// the floor was always enforced but never visible in the response.
+func TestListPoolsExposesScaleWindow(t *testing.T) {
+	s, _ := newCeilingTestServer(t, testOrgCap, map[string]*fakePoolState{
+		"autoscaled-pool": {autoscaled: true, minNodes: 2, maxNodes: 10},
+		"fixed-pool":      {desired: 3},
+	}, nil)
+
+	req := httptest.NewRequest("GET", "/v1/pools", nil)
+	req.Header.Set("Authorization", "Bearer "+callerToken)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Pools []struct {
+			Name       string `json:"name"`
+			LowerBound int    `json:"lowerBound"`
+			UpperBound int    `json:"upperBound"`
+			Autoscaled bool   `json:"autoscaled"`
+		} `json:"pools"`
+		Cap int `json:"cap"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body not JSON: %v", err)
+	}
+	if body.Cap != testOrgCap {
+		t.Errorf("expected cap %d, got %d", testOrgCap, body.Cap)
+	}
+	if len(body.Pools) != 2 {
+		t.Fatalf("expected 2 pools, got %d: %v", len(body.Pools), body.Pools)
+	}
+
+	type bounds struct {
+		lower, upper int
+		autoscaled   bool
+	}
+	want := map[string]bounds{
+		"autoscaled-pool": {lower: 2, upper: 10, autoscaled: true},
+		"fixed-pool":      {lower: 0, upper: 3, autoscaled: false},
+	}
+	for _, p := range body.Pools {
+		w, ok := want[p.Name]
+		if !ok {
+			t.Errorf("unexpected pool %q in response", p.Name)
+			continue
+		}
+		if p.LowerBound != w.lower {
+			t.Errorf("%s: lowerBound = %d, want %d", p.Name, p.LowerBound, w.lower)
+		}
+		if p.UpperBound != w.upper {
+			t.Errorf("%s: upperBound = %d, want %d", p.Name, p.UpperBound, w.upper)
+		}
+		if p.Autoscaled != w.autoscaled {
+			t.Errorf("%s: autoscaled = %v, want %v", p.Name, p.Autoscaled, w.autoscaled)
+		}
+	}
+}
+
 func TestTokenFingerprintGeneration(t *testing.T) {
 	log := slog.New(slog.Default().Handler())
 	pol := policy.NewConfig(10, []string{"gp.vs1.medium-iad"}, 0.01)

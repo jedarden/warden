@@ -42,6 +42,7 @@ reachable).
       "name": "agent-pool",
       "serverClass": "ch.vs1.large-ord",
       "bidPrice": "0.01",
+      "lowerBound": 2,
       "upperBound": 4,
       "autoscaled": true
     }
@@ -52,7 +53,14 @@ reachable).
 
 `cap` is the configured org-wide node ceiling (`WARDEN_MAX_TOTAL_NODES`).
 `upperBound` is what the ceiling sums: `autoscaling.maxNodes` when `autoscaled`,
-else the fixed `desired`.
+else the fixed `desired`. `lowerBound` is the scale-request floor: counts below
+it are denied with the below-minNodes 403 (see the denial table below). It is
+`autoscaling.minNodes` when `autoscaled`, else `0` — on a fixed pool any
+non-negative count is legal. Together `lowerBound ≤ count ≤ upperBound` is the
+count window a caller can program against; a count inside it can still be
+denied by the org ceiling, the class allowlist, or the bid cap. Lowering a
+floor is a pool re-shape done out-of-band (console/Terraform); warden never
+writes `minNodes`.
 
 ## `POST /v1/pools/{name}/scale`
 
@@ -106,7 +114,7 @@ leaves one audit entry per re-decision.
 |--------|--------|
 | `400` | No — fix the body |
 | `401` | No — credentials are wrong; re-provision out-of-band |
-| `403` | Not as-is — lower `count` or fix the pool out-of-band (class/bid/minNodes); the ceiling denial may pass later if other pools shrink |
+| `403` | Not as-is — lower `count` or fix the pool out-of-band (class/bid/minNodes); `lowerBound` on the pool list shows the floor a below-minNodes denial wants, and the ceiling denial may pass later if other pools shrink |
 | `404` | No — the pool does not exist; pools are created out-of-band (console/Terraform), never through warden |
 | `409` | Yes — later; warden already retried internally (`maxScaleAttempts = 4`, a compile-time constant, not configurable) and failed closed |
 | `502` | Yes — later; upstream Spot was unavailable or timed out |

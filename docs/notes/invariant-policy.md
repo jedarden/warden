@@ -35,7 +35,11 @@ on the kind of pool (decided 2026-09-16, bead `warden-16be4ebe`):
 warden never writes `autoscaling.minNodes`. A count below the pool's current
 `minNodes` would leave an inverted window (`maxNodes < minNodes`), so it is
 **denied** — fail closed. Lowering a floor is a pool re-shape, not a scale; do
-it out-of-band and retry. Scale-to-zero on an autoscaled pool therefore requires
+it out-of-band and retry. Since bead `warden-db1e5d95` the enforced floor is
+visible to callers: `GET /v1/pools` returns each pool's `lowerBound`
+(`minNodes` when autoscaled, `0` on a fixed pool) next to `upperBound`, so a
+caller can stay inside the window without probing for the 403.
+Scale-to-zero on an autoscaled pool therefore requires
 `minNodes = 0` and means `maxNodes = 0`: the autoscaler may not add nodes (the
 pool is paused), not that anything is deleted.
 

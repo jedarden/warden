@@ -62,6 +62,18 @@ func (p NodePool) UpperBound() int {
 	return 0
 }
 
+// LowerBound is the minimum node count warden will accept for this pool: the
+// autoscaling floor if autoscaling is enabled, otherwise 0 — any non-negative
+// count is legal on a fixed pool. A scale request below this bound is denied
+// (warden sets maxNodes only and never lowers minNodes), so together with
+// UpperBound it is the count window callers can program against.
+func (p NodePool) LowerBound() int {
+	if p.Autoscaled() {
+		return p.Spec.Autoscaling.MinNodes
+	}
+	return 0
+}
+
 // Autoscaled reports whether the pool is driven by the cluster-autoscaler
 // (maxNodes) rather than a fixed desired count.
 func (p NodePool) Autoscaled() bool {
