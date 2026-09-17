@@ -15,7 +15,7 @@ manifest in `declarative-config`, commit, push, let ArgoCD sync.
 - `service.yaml` — ClusterIP.
 - `ingressroute.yaml` — Certificate + Traefik IngressRoute on the `vpn` entrypoint (tailnet-only; `websecure` would make it public).
 - `warden-spot-credentials-externalsecret.yaml` — Spot refresh token from OpenBao (populated; provisioning & rotation runbook: `docs/notes/spot-token-provisioning.md`).
-- `warden-caller-tokens-externalsecret.yaml` — caller bearer token(s) from OpenBao (populated; SecretSynced verified 2026-08-23, re-verified live 2026-09-16).
+- `warden-caller-tokens-externalsecret.yaml` — caller bearer token(s) from OpenBao (populated; SecretSynced verified 2026-08-23, re-verified live 2026-09-16; provisioning & rotation runbook: `docs/notes/caller-token-provisioning.md`).
 - `docker-hub-registry-externalsecret.yaml` — image pull credentials from OpenBao (populated; SecretSynced verified live 2026-09-16).
 - `warden-build.workflowtemplate.yaml` — Argo WorkflowTemplate, landed in `declarative-config` at `k8s/iad-ci/argo-workflows/warden-build-workflowtemplate.yml` (with the workflow-level `activeDeadlineSeconds` backstop; publishes only the semver tag, no `:latest`).
 

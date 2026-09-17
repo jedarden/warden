@@ -52,6 +52,8 @@ callers we don't fully trust, without ever handing them that token.
 - This is a **shared-secret** stopgap. Per-agent identity, attribution, and
   revocation arrive when SEAM (Phase 7) and NEEDLE tsnet identity land — at
   which point warden's auth is replaced, not extended.
+- How the tokens are generated, stored, rotated, and revoked:
+  [`caller-token-provisioning.md`](caller-token-provisioning.md).
 
 ## Non-goals (deliberate)
 

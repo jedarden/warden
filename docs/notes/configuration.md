@@ -14,7 +14,7 @@ reload: an invalid value fails `config.Load`, `cmd/warden` logs it and exits
 |----------|------------|
 | `WARDEN_SPOT_REFRESH_TOKEN` | Spot org refresh token; exchanged for the bearer the client actually sends (the OIDC `id_token`, not the opaque access token). Injected via envFrom the `warden-spot-credentials` ExternalSecret (OpenBao) — never in the repo, never logged. |
 | `WARDEN_ORG_NAMESPACE` | Must start with `org-` (validated). See "Org namespace" below. |
-| `WARDEN_CALLER_TOKENS` | Comma-separated, at least one after whitespace-trimming. Injected via envFrom the `warden-caller-tokens` ExternalSecret (OpenBao). Raw values are never logged; only sha256 fingerprints appear in audit records. |
+| `WARDEN_CALLER_TOKENS` | Comma-separated, at least one after whitespace-trimming. Injected via envFrom the `warden-caller-tokens` ExternalSecret (OpenBao). Raw values are never logged; only sha256 fingerprints appear in audit records. Generation, rotation, revocation, and rollback: [`caller-token-provisioning.md`](caller-token-provisioning.md). |
 
 Missing or invalid ⇒ startup error naming the variable
 (`invalid config: WARDEN_… is required; …`).

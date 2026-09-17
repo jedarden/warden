@@ -104,10 +104,12 @@ bao-as rs-manager-provision bao kv put -cas=<n> \
 shred -u /run/user/$UID/spot.rt
 ```
 
-`-cas=<n>` is mandatory practice on every write (rs-manager's mount is not yet
-`cas_required`), so a concurrent writer can't be silently clobbered. Never set
-`delete_version_after`; version history (mount default `max_versions=20`) is
-the undo story — agents cannot delete anywhere.
+`-cas=<n>` is mandatory practice on every write — and on rs-manager it is
+also *enforced*: the mount is `cas_required` (verified live 2026-09-17 — a
+write without `-cas` is rejected with `check-and-set parameter required for
+this call`; this note previously said "not yet", which had gone stale). Never
+set `delete_version_after`; version history (mount default `max_versions=20`)
+is the undo story — agents cannot delete anywhere.
 
 **4 — Verify by property** (next section). The deliverable is the *path* and
 its version number, never the value.
@@ -147,7 +149,9 @@ curl -sS -H "Authorization: Bearer $WARDEN_CALLER_TOKEN" \
 A 200 listing the `agent-sandbox` pool proves the whole chain. The caller
 token is a different secret (`secret/rs-manager/warden/caller-tokens`) and
 travels by the same rules — materialize it into the environment of the shell
-that needs it, never into a command line or file. Agents that hold no caller
+that needs it, never into a command line or file. Its own lifecycle runbook:
+[`caller-token-provisioning.md`](caller-token-provisioning.md). Agents that
+hold no caller
 token stop at the checks above plus pod logs
 (`kubectl --server=http://traefik-rs-manager:8001 logs -n warden deploy/warden`:
 audit lines carry 12-char caller fingerprints, never token material) and leave
