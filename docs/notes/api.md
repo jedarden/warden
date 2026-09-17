@@ -99,6 +99,15 @@ only discriminator:
 | Unparseable bid (fail closed) | `cannot parse pool bidPrice %q (fail closed)` |
 | Bid above cap | `pool bidPrice %.6f exceeds cap %.6f` |
 | Org ceiling exceeded | `request would bring org node ceiling to %d, exceeding cap of %d` |
+| Malformed target pool state (fail closed) | `target pool state is malformed: <detail> (fix the pool out-of-band; warden will not act on state it cannot interpret)` — `<detail>` is one of: `fixed pool has no desired count`, `desired count %d is negative`, `autoscaling minNodes %d is negative`, `autoscaling maxNodes %d is negative`, `autoscaling maxNodes %d is below minNodes %d` |
+| Malformed bystander pool (fail closed) | `org snapshot has malformed pool state: pool %q: <detail> (fail closed)` — same `<detail>` set, but the named pool is *not* the one being scaled; every scale in the org is denied until it is fixed |
+
+The last two rows are the malformed-upstream-state rule
+([`invariant-policy.md`](invariant-policy.md), "Malformed upstream state"):
+a pool whose node-count fields cannot be interpreted could under-count the
+org ceiling, so no scale is decided against a snapshot containing one. Unlike
+the other 403s, no `count` change can help — only an out-of-band repair of
+the named pool.
 
 `reason` strings are diagnostic, not a stable enum — match on the status code,
 log the reason. Unknown pool is deliberately *not* folded into the 403: it is a
@@ -114,7 +123,7 @@ leaves one audit entry per re-decision.
 |--------|--------|
 | `400` | No — fix the body |
 | `401` | No — credentials are wrong; re-provision out-of-band |
-| `403` | Not as-is — lower `count` or fix the pool out-of-band (class/bid/minNodes); `lowerBound` on the pool list shows the floor a below-minNodes denial wants, and the ceiling denial may pass later if other pools shrink |
+| `403` | Not as-is — lower `count` or fix the pool out-of-band (class/bid/minNodes); `lowerBound` on the pool list shows the floor a below-minNodes denial wants, and the ceiling denial may pass later if other pools shrink. A `malformed` reason needs the named pool repaired out-of-band first — no `count` passes while it is broken, and warden itself does not retry (one audited deny, zero patches) |
 | `404` | No — the pool does not exist; pools are created out-of-band (console/Terraform), never through warden |
 | `409` | Yes — later; warden already retried internally (`maxScaleAttempts = 4`, a compile-time constant, not configurable) and failed closed |
 | `502` | Yes — later; upstream Spot was unavailable or timed out |

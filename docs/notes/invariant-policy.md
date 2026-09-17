@@ -119,6 +119,75 @@ Any input warden cannot fully evaluate is denied:
 - Pool not found ⇒ deny (404).
 - Unknown route / method ⇒ 404 (no default-allow).
 
+## Malformed upstream state — fail closed (decided 2026-09-17, bead `warden-3694ee8d`)
+
+The bid rule above covers one uninterpretable field. The *node-count* fields
+had the same gap, and a worse failure direction: before this rule existed, a
+pool with a malformed count state flowed into the org total through
+`UpperBound()` as **0 or a negative number**, silently *shrinking* the summed
+ceiling and letting a breach through — the one direction this policy must
+never fail in. `NodePool.CountBoundError()` now enumerates the malformed
+states, and `EvaluateScale` denies while **any pool in the snapshot** carries
+one (the total is computed from all of them, so one broken pool poisons every
+scale):
+
+| Malformed state (any pool in the snapshot) | Why it fails closed |
+|---|---|
+| fixed pool with no `desired` | `UpperBound` reads 0 |
+| fixed pool with `desired` < 0 | `UpperBound` subtracts |
+| autoscaled pool with `minNodes` < 0 | the window is not interpretable state |
+| autoscaled pool with `maxNodes` < 0 | `UpperBound` subtracts |
+| autoscaled pool with `maxNodes` < `minNodes` | the autoscaler holds the pool at ≥ `minNodes`, so `maxNodes` under-counts a floor already above the "ceiling" |
+
+A negative `minNodes` is denied even when `maxNodes ≥ 0` would itself be a
+sane ceiling: guessing at which half of an invalid window upstream means is
+how a fail-open hole gets born. `maxNodes = minNodes = 0` stays legal — that
+is the documented paused state ("Scale semantics" above). On the wire, absent
+and zero are indistinguishable, so "absent bounds on an enabled autoscaler"
+decodes as paused 0/0 and is fine, while "absent `desired` on a fixed pool"
+is malformed by the same construction.
+
+`desired` on an autoscaled pool is deliberately **not** validated: the
+upstream cluster-autoscaler owns that field, warden never reads it there, and
+a vestigial value — documented-invalid but harmless to the ceiling — is not
+warden's to police. `UpperBound()` itself is unchanged (still reads 0 or the
+negative through): policy refuses to sum a snapshot containing a malformed
+pool rather than the method papering over it.
+
+An inverted window on the **target** is denied even at a count that would
+repair it (e.g. window `min 8 / max 2`, count 9): the same stance as the
+`minNodes` rule — warden does not act on state it cannot interpret, and a
+scale is not the tool for re-shaping a pool. Fix it out-of-band, then retry.
+
+Every row above resolves identically at the server layer, because they are
+all `EvaluateScale` denies:
+
+- **Decision:** deny. The patch is never constructed or sent (zero upstream
+  writes; the `maxScaleAttempts` conflict loop never starts, since that only
+  runs after an allowed decision).
+- **Status:** `403 Forbidden`, JSON `{"allowed": false, "reason": …}` — the
+  same uniform policy-denial shape as every other envelope violation. The
+  reason names the offending pool and field: `target pool state is malformed:
+  …` when it is the pool being scaled, `org snapshot has malformed pool state:
+  pool "<name>": …` when a bystander pool is the problem.
+- **Audit:** exactly one `audit` entry, `allowed=false`, carrying the same
+  reason and the requested count — recorded at the moment of the decision,
+  with no accompanying allows (the decision is made once; no patch means no
+  re-decisions).
+- **Retry:** none, automatically. A retry would re-list the same malformed
+  snapshot and re-deny — pure load. This differs from the 409 path, where
+  retrying is the whole point: there the state is *fresh*, here it is
+  *broken*. The condition is upstream's to fix out-of-band (the same class of
+  re-shape as lowering a floor); after the fix the identical request
+  succeeds. Callers should treat the 403 like any other policy denial: do not
+  retry as-is, fix the named pool, re-request.
+
+Evaluation order: request `count ≥ 0` → snapshot bounds interpretable →
+target floor → class allowlist → target bid → org total. A caller's own
+mistake (negative count) is reported before upstream's, and the malformed
+check runs before every pool-derived check because the floor, allowlist, bid,
+and cap decisions all assume the snapshot means what it says.
+
 ## Impossible by construction
 
 These are not on a deny-list — there is simply no way to express them through

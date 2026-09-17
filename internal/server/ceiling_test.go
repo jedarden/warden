@@ -40,6 +40,7 @@ const (
 type fakePoolState struct {
 	autoscaled  bool
 	desired     int
+	noDesired   bool // emit the pool without spec.desired at all (malformed fixed pool)
 	serverClass string
 	bidPrice    string
 	minNodes    int
@@ -118,7 +119,7 @@ func (f *fakeSpot) listHandler(w http.ResponseWriter, _ *http.Request) {
 		spec := map[string]any{"serverClass": serverClass, "bidPrice": bidPrice}
 		if p.autoscaled {
 			spec["autoscaling"] = map[string]any{"enabled": true, "minNodes": p.minNodes, "maxNodes": p.maxNodes}
-		} else {
+		} else if !p.noDesired {
 			spec["desired"] = p.desired
 		}
 		items = append(items, map[string]any{"metadata": meta, "spec": spec})

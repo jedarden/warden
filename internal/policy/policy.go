@@ -43,7 +43,12 @@ func allow(format string, a ...any) Decision {
 
 // EvaluateScale decides whether scaling target to count nodes is permitted,
 // given every current pool in the org (used for the org-wide total). It fails
-// closed: any out-of-envelope or unparseable input is denied.
+// closed: any out-of-envelope or unparseable input is denied. That includes
+// the snapshot itself — every pool in it must carry an interpretable
+// node-count bound (NodePool.CountBoundError), because a malformed bound
+// anywhere would enter the org total below as 0 or a negative number and
+// silently shrink the ceiling. Bid checks stay target-only: another pool's
+// bid plays no part in scaling this one; count bounds are everyone's business.
 //
 // "count" means the pool's size for a fixed pool and its autoscaler ceiling
 // (autoscaling.maxNodes) for an autoscaled one — see docs/notes/
@@ -58,6 +63,19 @@ func allow(format string, a ...any) Decision {
 func (c Config) EvaluateScale(target spot.NodePool, count int, all []spot.NodePool) Decision {
 	if count < 0 {
 		return deny("count must be >= 0, got %d", count)
+	}
+	// Malformed upstream state, before any other pool-derived check: the
+	// floor, class, bid, and cap decisions below all assume the snapshot means
+	// what it says. Warden will not act on — or repair by scaling — state it
+	// cannot interpret. See docs/notes/invariant-policy.md, "Malformed
+	// upstream state".
+	for i := range all {
+		if err := all[i].CountBoundError(); err != nil {
+			if all[i].Metadata.Name == target.Metadata.Name {
+				return deny("target pool state is malformed: %v (fix the pool out-of-band; warden will not act on state it cannot interpret)", err)
+			}
+			return deny("org snapshot has malformed pool state: pool %q: %v (fail closed)", all[i].Metadata.Name, err)
+		}
 	}
 	// Autoscaled targets scale by ceiling: the request sets autoscaling.maxNodes
 	// only. warden never writes desired (the upstream cluster-autoscaler owns

@@ -1,5 +1,10 @@
 package spot
 
+import (
+	"errors"
+	"fmt"
+)
+
 // NodePool is a partial view of the ngpc.rxt.io/v1 SpotNodePool CRD — only the
 // fields warden reads or writes.
 //
@@ -52,6 +57,10 @@ type NodePoolList struct {
 // UpperBound is the maximum number of nodes this pool can contribute to the
 // org total: the autoscaling ceiling if autoscaling is enabled, otherwise the
 // fixed desired count.
+//
+// The return value is only trustworthy when CountBoundError is nil — on a
+// malformed pool it silently reads 0 or a negative number, which is exactly
+// why policy refuses to sum a snapshot containing one.
 func (p NodePool) UpperBound() int {
 	if p.Autoscaled() {
 		return p.Spec.Autoscaling.MaxNodes
@@ -60,6 +69,51 @@ func (p NodePool) UpperBound() int {
 		return *p.Spec.Desired
 	}
 	return 0
+}
+
+// CountBoundError reports why the pool's node-count state cannot be
+// interpreted — nil means the pool is well-formed and UpperBound/LowerBound
+// can be trusted. Policy denies any scale while any pool in the snapshot
+// carries one of these states, because each of them makes UpperBound
+// under-count the org ceiling (0, or a negative, in place of the real bound):
+//
+//   - fixed pool with no desired count  → UpperBound reads 0
+//   - fixed pool with a negative desired → UpperBound subtracts
+//   - autoscaled pool with a negative minNodes or maxNodes
+//   - autoscaled pool with maxNodes < minNodes — the autoscaler holds the
+//     pool at ≥ minNodes, so maxNodes under-counts a floor that is already
+//     above the "ceiling"
+//
+// A negative minNodes is denied even when maxNodes ≥ 0 would itself be a sane
+// ceiling: the window as a whole is not state warden can interpret, and
+// guessing at which half of it upstream means is how a fail-open hole gets
+// born. maxNodes = minNodes = 0 stays legal — that is the documented paused
+// state (see docs/notes/invariant-policy.md, "Scale semantics").
+//
+// desired on an autoscaled pool is deliberately NOT validated: the upstream
+// cluster-autoscaler owns that field, warden never reads it on an autoscaled
+// pool, and a vestigial value there — documented-invalid but harmless to the
+// ceiling — is not warden's to police.
+func (p NodePool) CountBoundError() error {
+	if p.Autoscaled() {
+		a := p.Spec.Autoscaling
+		switch {
+		case a.MinNodes < 0:
+			return fmt.Errorf("autoscaling minNodes %d is negative", a.MinNodes)
+		case a.MaxNodes < 0:
+			return fmt.Errorf("autoscaling maxNodes %d is negative", a.MaxNodes)
+		case a.MaxNodes < a.MinNodes:
+			return fmt.Errorf("autoscaling maxNodes %d is below minNodes %d", a.MaxNodes, a.MinNodes)
+		}
+		return nil
+	}
+	if p.Spec.Desired == nil {
+		return errors.New("fixed pool has no desired count")
+	}
+	if *p.Spec.Desired < 0 {
+		return fmt.Errorf("desired count %d is negative", *p.Spec.Desired)
+	}
+	return nil
 }
 
 // LowerBound is the minimum node count warden will accept for this pool: the

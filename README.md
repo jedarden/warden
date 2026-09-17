@@ -33,6 +33,11 @@ clusters, two boundaries compose:
   that counts each pool's autoscaling max, not just its current size.
 - **Allowed server classes** only (default `gp.vs1.medium-iad`).
 - **Bid cap** (default `0.01`) — warden refuses to grow a pool bidding above it.
+- **Fail closed on malformed pool state** — a pool with missing/negative
+  `desired`, negative autoscaling bounds, or `maxNodes < minNodes` (in any pool
+  of the org) blocks every scale until repaired out-of-band: an
+  uninterpretable bound could under-count the org ceiling. See
+  `docs/notes/invariant-policy.md`, "Malformed upstream state".
 - **Autoscaled pools scale by ceiling** — a scale request on an autoscaled pool
   sets `autoscaling.maxNodes`, never `desired` (the upstream cluster-autoscaler
   owns it and would fight a fixed count) and never `minNodes`; a count below the
