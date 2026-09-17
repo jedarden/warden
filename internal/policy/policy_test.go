@@ -167,3 +167,197 @@ func TestScaleToZeroAllowed(t *testing.T) {
 		t.Fatalf("expected allow scale-to-zero: %s", d.Reason)
 	}
 }
+
+func TestEvaluateScaleInvariantMatrix(t *testing.T) {
+	const class = "gp.vs1.medium-iad"
+
+	tests := []struct {
+		name       string
+		target     spot.NodePool
+		count      int
+		all        []spot.NodePool
+		wantAllow  bool
+		reasonPart string
+	}{
+		{
+			name:       "negative fixed count is denied",
+			target:     fixedPool("workers", class, 2, "0.001"),
+			count:      -1,
+			wantAllow:  false,
+			reasonPart: "count must be >= 0",
+		},
+		{
+			name:       "negative autoscaled count is denied before floor check",
+			target:     autoPool("workers", class, 3, 8, "0.001"),
+			count:      -1,
+			wantAllow:  false,
+			reasonPart: "count must be >= 0",
+		},
+		{
+			name:       "zero fixed count is allowed",
+			target:     fixedPool("workers", class, 4, "0.001"),
+			count:      0,
+			wantAllow:  true,
+			reasonPart: "scale \"workers\" to 0",
+		},
+		{
+			name:       "zero autoscaled count is allowed with zero floor",
+			target:     autoPool("workers", class, 0, 4, "0.001"),
+			count:      0,
+			wantAllow:  true,
+			reasonPart: "maxNodes",
+		},
+		{
+			name:   "fixed target bound is replaced when shrinking",
+			target: fixedPool("target", class, 8, "0.001"),
+			count:  6,
+			all: []spot.NodePool{
+				fixedPool("other", class, 3, "0.001"),
+				fixedPool("target", class, 8, "0.001"),
+			},
+			wantAllow:  true,
+			reasonPart: "org ceiling 9/10",
+		},
+		{
+			name:   "autoscaled target max bound is replaced when shrinking",
+			target: autoPool("target", class, 0, 8, "0.001"),
+			count:  6,
+			all: []spot.NodePool{
+				fixedPool("other", class, 3, "0.001"),
+				autoPool("target", class, 0, 8, "0.001"),
+			},
+			wantAllow:  true,
+			reasonPart: "org ceiling 9/10",
+		},
+		{
+			name:   "fixed target growth is bounded with replacement",
+			target: fixedPool("target", class, 2, "0.001"),
+			count:  3,
+			all: []spot.NodePool{
+				fixedPool("target", class, 2, "0.001"),
+				fixedPool("other", class, 7, "0.001"),
+			},
+			wantAllow:  true,
+			reasonPart: "org ceiling 10/10",
+		},
+		{
+			name:   "autoscaled target growth uses the requested ceiling",
+			target: autoPool("target", class, 0, 2, "0.001"),
+			count:  4,
+			all: []spot.NodePool{
+				autoPool("target", class, 0, 2, "0.001"),
+				fixedPool("other", class, 7, "0.001"),
+			},
+			wantAllow:  false,
+			reasonPart: "org node ceiling to 11",
+		},
+		{
+			name:       "count below autoscaling floor is denied",
+			target:     autoPool("workers", class, 3, 8, "0.001"),
+			count:      2,
+			wantAllow:  false,
+			reasonPart: "below autoscaling minNodes 3",
+		},
+		{
+			name:       "count at autoscaling floor is allowed",
+			target:     autoPool("workers", class, 3, 8, "0.001"),
+			count:      3,
+			wantAllow:  true,
+			reasonPart: "maxNodes",
+		},
+		{
+			name:       "scale to zero below nonzero floor is denied",
+			target:     autoPool("workers", class, 1, 4, "0.001"),
+			count:      0,
+			wantAllow:  false,
+			reasonPart: "below autoscaling minNodes 1",
+		},
+		{
+			name:       "allowlisted class is allowed",
+			target:     fixedPool("workers", class, 1, "0.001"),
+			count:      1,
+			wantAllow:  true,
+			reasonPart: "scale \"workers\"",
+		},
+		{
+			name:       "class outside allowlist is denied",
+			target:     fixedPool("workers", "gp.vs1.large-iad", 1, "0.001"),
+			count:      1,
+			wantAllow:  false,
+			reasonPart: "not in the allowlist",
+		},
+		{
+			name:       "missing bid is allowed",
+			target:     fixedPool("workers", class, 1, ""),
+			count:      1,
+			wantAllow:  true,
+			reasonPart: "scale \"workers\"",
+		},
+		{
+			name:       "bid below cap is allowed",
+			target:     fixedPool("workers", class, 1, "0.0005"),
+			count:      1,
+			wantAllow:  true,
+			reasonPart: "scale \"workers\"",
+		},
+		{
+			name:       "bid exactly at cap is allowed",
+			target:     fixedPool("workers", class, 1, "0.001"),
+			count:      1,
+			wantAllow:  true,
+			reasonPart: "scale \"workers\"",
+		},
+		{
+			name:       "bid above cap is denied",
+			target:     fixedPool("workers", class, 1, "0.001001"),
+			count:      1,
+			wantAllow:  false,
+			reasonPart: "exceeds cap",
+		},
+		{
+			name:       "unparseable bid is denied fail closed",
+			target:     fixedPool("workers", class, 1, "not-a-price"),
+			count:      1,
+			wantAllow:  false,
+			reasonPart: "cannot parse pool bidPrice",
+		},
+		{
+			name:   "fixed other pool contributes to org ceiling",
+			target: fixedPool("target", class, 0, "0.001"),
+			count:  2,
+			all: []spot.NodePool{
+				fixedPool("target", class, 0, "0.001"),
+				fixedPool("other", class, 8, "0.001"),
+			},
+			wantAllow:  true,
+			reasonPart: "org ceiling 10/10",
+		},
+		{
+			name:   "autoscaled other pool contributes max ceiling",
+			target: fixedPool("target", class, 0, "0.001"),
+			count:  3,
+			all: []spot.NodePool{
+				fixedPool("target", class, 0, "0.001"),
+				autoPool("other", class, 0, 8, "0.001"),
+			},
+			wantAllow:  false,
+			reasonPart: "org node ceiling to 11",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			all := tt.all
+			if all == nil {
+				all = []spot.NodePool{tt.target}
+			}
+			d := cfg().EvaluateScale(tt.target, tt.count, all)
+			if d.Allow != tt.wantAllow {
+				t.Fatalf("Allow = %v, want %v; reason: %s", d.Allow, tt.wantAllow, d.Reason)
+			}
+			if !strings.Contains(d.Reason, tt.reasonPart) {
+				t.Errorf("reason = %q, want substring %q", d.Reason, tt.reasonPart)
+			}
+		})
+	}
+}

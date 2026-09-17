@@ -38,10 +38,13 @@ const (
 )
 
 type fakePoolState struct {
-	autoscaled bool
-	desired    int
-	maxNodes   int
-	rv         int // 0 = upstream exposes no resourceVersion
+	autoscaled  bool
+	desired     int
+	serverClass string
+	bidPrice    string
+	minNodes    int
+	maxNodes    int
+	rv          int // 0 = upstream exposes no resourceVersion
 }
 
 func (p *fakePoolState) upper() int {
@@ -104,9 +107,17 @@ func (f *fakeSpot) listHandler(w http.ResponseWriter, _ *http.Request) {
 		if p.rv > 0 {
 			meta["resourceVersion"] = fmt.Sprintf("rv-%d", p.rv)
 		}
-		spec := map[string]any{"serverClass": testClass, "bidPrice": "0.01"}
+		serverClass := p.serverClass
+		if serverClass == "" {
+			serverClass = testClass
+		}
+		bidPrice := p.bidPrice
+		if bidPrice == "" {
+			bidPrice = "0.01"
+		}
+		spec := map[string]any{"serverClass": serverClass, "bidPrice": bidPrice}
 		if p.autoscaled {
-			spec["autoscaling"] = map[string]any{"enabled": true, "minNodes": 0, "maxNodes": p.maxNodes}
+			spec["autoscaling"] = map[string]any{"enabled": true, "minNodes": p.minNodes, "maxNodes": p.maxNodes}
 		} else {
 			spec["desired"] = p.desired
 		}
