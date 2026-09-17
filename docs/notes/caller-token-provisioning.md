@@ -227,8 +227,15 @@ allowlist entries):
    valid in the store.
 3. **Wait for ESO** (≤1h, or operator force-sync:
    `kubectl -n warden annotate externalsecret warden-caller-tokens
-   force-sync=$(date +%s) --provider-sync`) and confirm `SecretSynced=True`
-   with LAST SYNC advanced.
+   external-secrets.io/force-sync=$(date +%s)`) and confirm `SecretSynced=True`
+   with LAST SYNC advanced. The annotation *value* is irrelevant to the
+   operator: any write to the ExternalSecret bumps its `resourceVersion`,
+   which makes the next reconcile refresh immediately (ESO's
+   `shouldRefreshPeriodic`, verified against v2.2.0 source). The
+   `external-secrets.io/force-sync` key is the one a ClusterExternalSecret
+   mirrors, so it is the documented key to use here too. Treat the annotate
+   as a transient poke, not desired state — the sync fires once, and the 1h
+   tick is the fallback regardless.
 4. **Operator: restart the workload**
    (`kubectl -n warden rollout restart deployment/warden`). The pod now
    accepts both tokens.
