@@ -15,7 +15,7 @@ manifest in `declarative-config`, commit, push, let ArgoCD sync.
 - `service.yaml` — ClusterIP.
 - `ingressroute.yaml` — Certificate + Traefik IngressRoute on the `vpn` entrypoint (tailnet-only; `websecure` would make it public).
 - `warden-spot-credentials-externalsecret.yaml` — Spot refresh token from OpenBao (populated; provisioning & rotation runbook: `docs/notes/spot-token-provisioning.md`).
-- `warden-caller-tokens-externalsecret.yaml` — caller bearer token(s) from OpenBao (populated; SecretSynced verified 2026-08-23, re-verified live 2026-09-16; provisioning & rotation runbook: `docs/notes/caller-token-provisioning.md`).
+- `warden-caller-tokens-externalsecret.yaml` — caller bearer token(s) from OpenBao (populated; SecretSynced verified 2026-08-23, re-verified live 2026-09-17; provisioning & rotation runbook: `docs/notes/caller-token-provisioning.md`).
 - `docker-hub-registry-externalsecret.yaml` — image pull credentials from OpenBao (populated; SecretSynced verified live 2026-09-16).
 - `warden-build.workflowtemplate.yaml` — Argo WorkflowTemplate, landed in `declarative-config` at `k8s/iad-ci/argo-workflows/warden-build-workflowtemplate.yml` (with the workflow-level `activeDeadlineSeconds` backstop; publishes only the semver tag, no `:latest`).
 
@@ -34,7 +34,9 @@ cluster uses (see `armor`, `traefik-forward-auth`, etc. in declarative-config).
    verified 2026-08-23; docker pull credentials synced before first deploy).
    Values travel by pipe or `@file`, never argv:
    ```bash
-   openssl rand -hex 32 | bao kv put secret/rs-manager/warden/caller-tokens token=-
+   # First get the current_version from the runbook, then write with CAS.
+   openssl rand -hex 32 | bao-as rs-manager-provision bao kv put -cas=<n> \
+     secret/rs-manager/warden/caller-tokens token=-
    ```
 4. ~~Copy all manifests in this directory to `declarative-config` at `k8s/rs-manager/warden/`, commit, push~~ — done (landed 2026-07-30 through 2026-08-23; see the `warden/` history in declarative-config). ArgoCD syncs with its own in-cluster credentials.
 5. ~~Confirm the ExternalSecrets resolve and the pod comes up healthy~~ — done. All three ExternalSecrets report `SecretSynced=True`, certificate `warden-tls` is `Ready=True` (after the ingressroute issuer fix, see that file's comment), and the pod is Running.

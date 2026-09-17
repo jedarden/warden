@@ -142,14 +142,18 @@ curl -sS https://warden-rs-manager.ardenone.com:8444/healthz
 actually exchanges against the live Spot API:
 
 ```bash
-curl -sS -H "Authorization: Bearer $WARDEN_CALLER_TOKEN" \
-  https://warden-rs-manager.ardenone.com:8444/v1/pools
+(
+  read -rs WARDEN_CALLER_TOKEN  # paste at the hidden prompt, then Enter
+  printf 'Authorization: Bearer %s\n' "$WARDEN_CALLER_TOKEN" |
+    curl -sS --header @- \
+      https://warden-rs-manager.ardenone.com:8444/v1/pools
+)
 ```
 
 A 200 listing the `agent-sandbox` pool proves the whole chain. The caller
 token is a different secret (`secret/rs-manager/warden/caller-tokens`) and
-travels by the same rules — materialize it into the environment of the shell
-that needs it, never into a command line or file. Its own lifecycle runbook:
+travels by the same rules — enter it only at the hidden prompt and pipe it to
+curl's stdin header, never into a command line or file. Its own lifecycle runbook:
 [`caller-token-provisioning.md`](caller-token-provisioning.md). Agents that
 hold no caller
 token stop at the checks above plus pod logs

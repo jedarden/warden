@@ -106,7 +106,12 @@ openssl rand -hex 32 | bao-as rs-manager-provision bao kv put -cas=<n> \
 
 Adding a second caller (e.g. to separate audit attribution per consumer)
 means re-storing the whole allowlist with the new entry appended — see
-"Rotation" for the no-outage pattern.
+"Rotation" for the no-outage pattern. The rotation example captures the
+existing field only in a short-lived shell variable so that it can append the
+new value without putting either value in argv or the terminal. If the new
+value must be handed to a consumer, pipe it from that same protected context
+to the consumer's own secret-store writer before clearing the variable; never
+paste it into chat or a command argument.
 
 `-cas=<n>` is **mandatory here, not just good practice**: rs-manager's mount
 is `cas_required` (verified live 2026-09-17 — a write without `-cas` is
@@ -147,11 +152,17 @@ matches the live allowlist. It requires holding that token, so it belongs to
 whichever actor legitimately has it in hand:
 
 ```bash
-read -rs CALLER_TOKEN        # paste at the hidden prompt, then Enter
-curl -sS -H "Authorization: Bearer $CALLER_TOKEN" \
-  https://warden-rs-manager.ardenone.com:8444/v1/pools
-unset CALLER_TOKEN
+(
+  read -rs CALLER_TOKEN       # paste at the hidden prompt, then Enter
+  printf 'Authorization: Bearer %s\n' "$CALLER_TOKEN" |
+    curl -sS --header @- \
+      https://warden-rs-manager.ardenone.com:8444/v1/pools
+)
 ```
+
+`--header @-` makes curl read the header from stdin. The token therefore stays
+out of curl's argv and is not echoed; the subshell drops the variable when the
+request finishes.
 
 A 200 listing the `agent-sandbox` pool proves the whole chain for that token.
 An agent that holds no caller token stops at the property checks above — and
@@ -186,31 +197,86 @@ versioning 2026-09-17 — the version steps and rollback below ran clean on a
 disposable dev server, and the multi-token field round-trips into two
 allowlist entries):
 
-1. **Store the overlap version.** Append the new token, keep the old:
-   `token` field = `<old>,<new>` (whole field on one line; whitespace after
-   the comma is fine), `-cas=<current+1>`. Both tokens now valid in the store.
-2. **Wait for ESO** (≤1h, or operator force-sync:
+1. **Get the current version** from metadata and retain the number as
+   `<current>`. Do not use a value read-back as verification.
+2. **Store the overlap version.** This operator-side subshell reads the
+   current field and generates the new token without printing either value or
+   passing either value as an argument. It writes `old,new` to OpenBao through
+   stdin with CAS:
+
+   ```bash
+   (
+     set -eu
+     current_tokens="$(bao-as rs-manager bao kv get -field=token \
+       secret/rs-manager/warden/caller-tokens)"
+     new_token="$(openssl rand -hex 32)"
+     test -n "$current_tokens" && test -n "$new_token"
+     printf '%s,%s' "$current_tokens" "$new_token" |
+       bao-as rs-manager-provision bao kv put -cas=<current> \
+         secret/rs-manager/warden/caller-tokens token=-
+     # If a consumer must receive it, do that before this subshell ends:
+     # printf '%s' "$new_token" | <consumer's stdin-based secret writer>
+     # Keep the writer's path/field in its own secret store, never in a repo.
+   )
+   ```
+
+   `bao-as rs-manager` is the read identity; `bao-as rs-manager-provision` is
+   the write-only identity. Both values exist only in the subshell's memory
+   and the stdin pipe. If the CAS write fails, stop and get a fresh metadata
+   version rather than retrying with an unverified number. Both tokens are now
+   valid in the store.
+3. **Wait for ESO** (≤1h, or operator force-sync:
    `kubectl -n warden annotate externalsecret warden-caller-tokens
    force-sync=$(date +%s) --provider-sync`) and confirm `SecretSynced=True`
    with LAST SYNC advanced.
-3. **Operator: restart the workload**
+4. **Operator: restart the workload**
    (`kubectl -n warden rollout restart deployment/warden`). The pod now
    accepts both tokens.
-4. **Distribute the new token** to the consumer's own secret store,
-   out-of-band. Confirm end-to-end with it (`GET /v1/pools` → 200).
-5. **Store the trim version**: `token` = `<new>` only, `-cas=<current+1>`
-   again.
-6. **Wait for ESO, restart again.** The old token is dead the moment this pod
+5. **Confirm the consumer's handoff** out-of-band with `GET /v1/pools` → 200.
+   If the consumer handoff was not needed, skip this check; otherwise the
+   value must have been sent from the protected context in step 2 to the
+   consumer's own secret store, never pasted into chat or a command argument.
+6. **Store the trim version**: `token` = `<new>` only, `-cas=<current+1>`
+   again. For the current live state, which has one token, the new entry is the
+   last comma-separated value; derive it through pipes rather than reading it
+   to the terminal:
+
+   ```bash
+   bao-as rs-manager bao kv get -field=token \
+     secret/rs-manager/warden/caller-tokens |
+     awk -F, '{ sub(/^[[:space:]]+/, "", $NF); print $NF }' |
+     bao-as rs-manager-provision bao kv put -cas=<overlap-version> \
+       secret/rs-manager/warden/caller-tokens token=-
+   ```
+
+   For an allowlist with several surviving callers, construct the complete
+   `remaining,new` field in the same protected shell-memory/stdin pattern and
+   retain every non-retired entry; do not use the single-entry shortcut above.
+7. **Wait for ESO, restart again.** The old token is dead the moment this pod
    comes up.
 
-**Rollback:** the previous field content is still in OpenBao version history —
-re-store it as the *next* version (`-cas=<current+1>`, never "restore in
-place") and restart. There is no in-place revert and no delete; history is
-the undo.
+**Rollback:** the previous field content is still in OpenBao version history.
+Use the read identity only as a pipe source, and re-store that content as the
+*next* version; do not print it or restore in place:
+
+```bash
+(
+  set -eu
+  previous_tokens="$(bao-as rs-manager bao kv get -version=<previous> \
+    -field=token secret/rs-manager/warden/caller-tokens)"
+  test -n "$previous_tokens"
+  printf '%s' "$previous_tokens" |
+    bao-as rs-manager-provision bao kv put -cas=<current> \
+      secret/rs-manager/warden/caller-tokens token=-
+)
+```
+
+Then wait for `SecretSynced=True`, restart the workload, and verify by
+property. There is no in-place revert and no delete; history is the undo.
 
 **Rolling back a consumer** that received the new token but cannot use it yet:
-leave the overlap version in place (step 3 state) — both tokens work — and fix
-the consumer before doing step 5. Do not trim while a consumer is broken.
+leave the overlap version in place (step 4 state) — both tokens work — and fix
+the consumer before doing step 6. Do not trim while a consumer is broken.
 
 ## Revocation
 
