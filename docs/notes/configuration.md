@@ -1,5 +1,10 @@
 # Configuration reference
 
+For multiple Spot accounts or organizations, use the explicit target
+configuration and scoped routes in
+[multi-account-protection.md](multi-account-protection.md). The variables below
+describe the legacy single-organization deployment and remain supported.
+
 warden is configured entirely through `WARDEN_*` environment variables, read
 once at startup by `internal/config`. There is no config file and no runtime
 reload: an invalid value fails `config.Load`, `cmd/warden` logs it and exits

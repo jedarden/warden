@@ -45,7 +45,7 @@ type fakePoolState struct {
 	bidPrice    string
 	minNodes    int
 	maxNodes    int
-	rv          int // 0 = upstream exposes no resourceVersion
+	rv          int // -1 = upstream exposes no resourceVersion; 0 is the default revision
 }
 
 func (p *fakePoolState) upper() int {
@@ -105,7 +105,7 @@ func (f *fakeSpot) listHandler(w http.ResponseWriter, _ *http.Request) {
 	items := make([]map[string]any, 0, len(f.pools))
 	for name, p := range f.pools {
 		meta := map[string]any{"name": name}
-		if p.rv > 0 {
+		if p.rv >= 0 {
 			meta["resourceVersion"] = fmt.Sprintf("rv-%d", p.rv)
 		}
 		serverClass := p.serverClass
@@ -203,6 +203,12 @@ func newCeilingTestServer(t *testing.T, capNodes int, pools map[string]*fakePool
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /oauth/token", f.tokenHandler)
+	mux.HandleFunc("GET /apis/ngpc.rxt.io/v1/serverclasses/{name}", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"metadata": map[string]any{"name": r.PathValue("name")},
+			"spec":     map[string]any{"minBidPricePerHour": "0.001"},
+		})
+	})
 	mux.HandleFunc("GET /apis/ngpc.rxt.io/v1/namespaces/", f.listHandler)
 	mux.HandleFunc("PATCH /apis/ngpc.rxt.io/v1/namespaces/", f.patchHandler)
 	backend := httptest.NewServer(mux)
@@ -370,10 +376,8 @@ func TestScaleConflictExhaustedFailsClosed(t *testing.T) {
 	}
 }
 
-// TestScaleRetriesWithoutPreconditionWhenRejected covers the degraded path:
-// the upstream refuses the resourceVersion-carrying patch shape outright
-// (HTTP 422). warden must retry the identical patch without the precondition
-// rather than fail every scale — single-flight still guards the ceiling.
+// A rejected revision precondition must fail closed. Retrying without it
+// could apply a decision made before an out-of-band bid change.
 func TestScaleRetriesWithoutPreconditionWhenRejected(t *testing.T) {
 	s, f := newCeilingTestServer(t, testOrgCap, map[string]*fakePoolState{
 		"pool-a": {desired: 2, rv: 5},
@@ -388,25 +392,24 @@ func TestScaleRetriesWithoutPreconditionWhenRejected(t *testing.T) {
 	})
 
 	rec := s.scaleSync(t, "pool-a", 5)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 via precondition-free retry, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 after rejected precondition, got %d: %s", rec.Code, rec.Body.String())
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(f.patches) != 2 || !f.patches[0].carriesRV || f.patches[0].status != http.StatusUnprocessableEntity || f.patches[1].carriesRV || f.patches[1].status != http.StatusOK {
-		t.Errorf("expected [RV-carrying patch 422, plain retry 200], got %+v", f.patches)
+	if len(f.patches) != 1 || !f.patches[0].carriesRV || f.patches[0].status != http.StatusUnprocessableEntity {
+		t.Errorf("expected one rejected RV-carrying patch, got %+v", f.patches)
 	}
-	if got := f.pools["pool-a"].desired; got != 5 {
-		t.Errorf("expected pool scaled to 5, got %d", got)
+	if got := f.pools["pool-a"].desired; got != 2 {
+		t.Errorf("pool must remain at 2, got %d", got)
 	}
 }
 
-// TestNoPreconditionSentWhenUpstreamHasNoRV pins the inverse guard: when the
-// snapshot carries no resourceVersion at all, warden sends none — and a 422 on
-// a plain patch is a real upstream error (no precondition-free fallback loop).
+// A pool without a resourceVersion cannot be patched safely after the bid
+// check, because a concurrent writer could change that bid first.
 func TestNoPreconditionSentWhenUpstreamHasNoRV(t *testing.T) {
 	s, f := newCeilingTestServer(t, testOrgCap, map[string]*fakePoolState{
-		"pool-a": {desired: 2, rv: 0}, // upstream exposes no resourceVersion
+		"pool-a": {desired: 2, rv: -1}, // upstream exposes no resourceVersion
 	}, func(f *fakeSpot) {
 		f.listDelay, f.patchDelay = 0, 0
 		f.patchHook = func(_ string, _ map[string]any, carriesRV bool) int {
@@ -423,8 +426,8 @@ func TestNoPreconditionSentWhenUpstreamHasNoRV(t *testing.T) {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(f.patches) != 1 {
-		t.Errorf("expected a single attempt (no fallback loop), got %d", len(f.patches))
+	if len(f.patches) != 0 {
+		t.Errorf("expected no patch without resourceVersion, got %d", len(f.patches))
 	}
 }
 

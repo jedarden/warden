@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -21,29 +22,48 @@ import (
 )
 
 type Server struct {
-	namespace string
-	pol       policy.Config
-	spot      *spot.Client
-	tokens    map[string]string // sha256(token) hex -> caller fingerprint
-	log       *slog.Logger
-	timeout   time.Duration
+	namespace     string // legacy constructor compatibility
+	targets       map[string]*Target
+	defaultTarget *Target
+	tokens        map[string]string // sha256(token) hex -> caller fingerprint
+	log           *slog.Logger
+	timeout       time.Duration
+}
 
-	// scaleMu single-flights scale handling: the org-wide ceiling is checked
-	// against a snapshot of every pool and then applied, so the whole
-	// read→evaluate→write sequence must be serialized or two concurrent
-	// requests could both pass against the same snapshot and both land,
-	// breaching MAX_TOTAL_NODES. One mutex for all pools — the invariant is
-	// org-wide, so even scales of different pools race each other.
+// Target is one explicitly configured organization under one account
+// credential. There is no route accepting an arbitrary upstream namespace.
+type Target struct {
+	Account    string
+	Namespace  string
+	Spot       *spot.Client
+	Policy     policy.Config
+	AllowScale bool
+	// Every scale against this organization serializes read, decision and patch.
 	scaleMu sync.Mutex
 }
 
+func targetKey(account, namespace string) string { return account + "\x00" + namespace }
+
 func New(namespace string, pol policy.Config, sc *spot.Client, callerTokens []string, log *slog.Logger, timeout time.Duration) *Server {
+	target := &Target{Account: "default", Namespace: namespace, Spot: sc, Policy: pol, AllowScale: true}
+	s := NewMulti([]*Target{target}, callerTokens, log, timeout)
+	s.namespace, s.defaultTarget = namespace, target
+	return s
+}
+
+// NewMulti requires callers to select an account and organization explicitly.
+// Legacy unscoped routes exist only when New is used for the old deployment.
+func NewMulti(targets []*Target, callerTokens []string, log *slog.Logger, timeout time.Duration) *Server {
 	tokens := make(map[string]string, len(callerTokens))
 	for _, t := range callerTokens {
 		h := hexSHA(t)
 		tokens[h] = h[:12] // fingerprint = first 12 hex chars of the digest
 	}
-	return &Server{namespace: namespace, pol: pol, spot: sc, tokens: tokens, log: log, timeout: timeout}
+	byKey := make(map[string]*Target, len(targets))
+	for _, target := range targets {
+		byKey[targetKey(target.Account, target.Namespace)] = target
+	}
+	return &Server{targets: byKey, tokens: tokens, log: log, timeout: timeout}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -54,7 +74,44 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.Handle("GET /v1/pools", s.auth(http.HandlerFunc(s.listPools)))
 	mux.Handle("POST /v1/pools/{name}/scale", s.auth(http.HandlerFunc(s.scalePool)))
+	mux.Handle("GET /v1/accounts", s.auth(http.HandlerFunc(s.listAccounts)))
+	mux.Handle("GET /v1/accounts/{account}/organizations/{namespace}/pools", s.auth(http.HandlerFunc(s.listPools)))
+	mux.Handle("POST /v1/accounts/{account}/organizations/{namespace}/pools/{name}/scale", s.auth(http.HandlerFunc(s.scalePool)))
 	return mux
+}
+
+func (s *Server) listAccounts(w http.ResponseWriter, _ *http.Request) {
+	type view struct {
+		Account    string `json:"account"`
+		Namespace  string `json:"namespace"`
+		AllowScale bool   `json:"allowScale"`
+	}
+	out := make([]view, 0, len(s.targets))
+	for _, target := range s.targets {
+		out = append(out, view{target.Account, target.Namespace, target.AllowScale})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Account == out[j].Account {
+			return out[i].Namespace < out[j].Namespace
+		}
+		return out[i].Account < out[j].Account
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"organizations": out})
+}
+
+func (s *Server) selectTarget(w http.ResponseWriter, r *http.Request) *Target {
+	account, namespace := r.PathValue("account"), r.PathValue("namespace")
+	if account == "" && namespace == "" {
+		if s.defaultTarget == nil {
+			http.Error(w, "select an account and organization", http.StatusConflict)
+		}
+		return s.defaultTarget
+	}
+	if target := s.targets[targetKey(account, namespace)]; target != nil {
+		return target
+	}
+	http.Error(w, "account or organization not found", http.StatusNotFound)
+	return nil
 }
 
 // auth enforces a caller bearer token, compared in constant time against the
@@ -98,9 +155,13 @@ func caller(r *http.Request) string {
 }
 
 func (s *Server) listPools(w http.ResponseWriter, r *http.Request) {
+	target := s.selectTarget(w, r)
+	if target == nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
 	defer cancel()
-	pools, err := s.spot.ListNodePools(ctx, s.namespace)
+	pools, err := target.Spot.ListNodePools(ctx, target.Namespace)
 	if err != nil {
 		s.log.Error("list pools", "err", err)
 		http.Error(w, "upstream error", http.StatusBadGateway)
@@ -118,7 +179,11 @@ func (s *Server) listPools(w http.ResponseWriter, r *http.Request) {
 	for _, p := range pools {
 		out = append(out, view{p.Metadata.Name, p.Spec.ServerClass, p.Spec.BidPrice, p.LowerBound(), p.UpperBound(), p.Autoscaled()})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"pools": out, "cap": s.pol.MaxTotalNodes})
+	response := map[string]any{"pools": out, "allowScale": target.AllowScale}
+	if target.AllowScale {
+		response["cap"] = target.Policy.MaxTotalNodes
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 type scaleReq struct {
@@ -130,7 +195,16 @@ type scaleReq struct {
 const maxScaleAttempts = 4
 
 func (s *Server) scalePool(w http.ResponseWriter, r *http.Request) {
+	targetConfig := s.selectTarget(w, r)
+	if targetConfig == nil {
+		return
+	}
 	name := r.PathValue("name")
+	if !targetConfig.AllowScale {
+		audit.Log(s.log, audit.Entry{CallerID: caller(r), RemoteAddr: audit.RemoteAddr(r), Action: "scale", Account: targetConfig.Account, Namespace: targetConfig.Namespace, Pool: name, Allowed: false, Reason: "scaling disabled for organization"})
+		writeJSON(w, http.StatusForbidden, map[string]any{"allowed": false, "reason": "scaling disabled for organization"})
+		return
+	}
 	var req scaleReq
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
 		http.Error(w, "invalid body: "+err.Error(), http.StatusBadRequest)
@@ -145,15 +219,15 @@ func (s *Server) scalePool(w http.ResponseWriter, r *http.Request) {
 	// apply, leaving the summed upper bounds above the org ceiling — the one
 	// guarantee warden exists to enforce. Held across retries too: a retry
 	// re-decides against fresh state and must not itself be raced.
-	s.scaleMu.Lock()
-	defer s.scaleMu.Unlock()
+	targetConfig.scaleMu.Lock()
+	defer targetConfig.scaleMu.Unlock()
 
 	for attempt := 1; ; attempt++ {
 		// Read-before-write: the org-wide cap can only be enforced against the
 		// full current set of pools, so we always list before deciding.
 		// Every iteration audits its own decision, so a retried request leaves
 		// one audit entry per re-decision, not one per request.
-		pools, err := s.spot.ListNodePools(ctx, s.namespace)
+		pools, err := targetConfig.Spot.ListNodePools(ctx, targetConfig.Namespace)
 		if err != nil {
 			s.log.Error("scale: list pools", "err", err)
 			http.Error(w, "upstream error", http.StatusBadGateway)
@@ -167,15 +241,30 @@ func (s *Server) scalePool(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if target == nil {
-			audit.Log(s.log, audit.Entry{CallerID: caller(r), RemoteAddr: audit.RemoteAddr(r), Action: "scale", Pool: name, Count: req.Count, Allowed: false, Reason: "pool not found"})
+			audit.Log(s.log, audit.Entry{CallerID: caller(r), RemoteAddr: audit.RemoteAddr(r), Action: "scale", Account: targetConfig.Account, Namespace: targetConfig.Namespace, Pool: name, Count: req.Count, Allowed: false, Reason: "pool not found"})
 			http.Error(w, "pool not found", http.StatusNotFound)
 			return
 		}
 
-		decision := s.pol.EvaluateScale(*target, req.Count, pools)
-		audit.Log(s.log, audit.Entry{CallerID: caller(r), RemoteAddr: audit.RemoteAddr(r), Action: "scale", Pool: name, Count: req.Count, Allowed: decision.Allow, Reason: decision.Reason})
+		class, err := targetConfig.Spot.GetServerClass(ctx, target.Spec.ServerClass)
+		if err != nil {
+			s.log.Error("scale: get server class", "account", targetConfig.Account, "namespace", targetConfig.Namespace, "class", target.Spec.ServerClass, "err", err)
+			audit.Log(s.log, audit.Entry{CallerID: caller(r), RemoteAddr: audit.RemoteAddr(r), Action: "scale", Account: targetConfig.Account, Namespace: targetConfig.Namespace, Pool: name, Count: req.Count, Allowed: false, Reason: "server class minimum unavailable"})
+			http.Error(w, "upstream server class unavailable", http.StatusBadGateway)
+			return
+		}
+		decision := policy.GrandfatheredBid(*target, *class)
+		if decision.Allow {
+			decision = targetConfig.Policy.EvaluateScale(*target, req.Count, pools)
+		}
+		audit.Log(s.log, audit.Entry{CallerID: caller(r), RemoteAddr: audit.RemoteAddr(r), Action: "scale", Account: targetConfig.Account, Namespace: targetConfig.Namespace, Pool: name, Count: req.Count, Allowed: decision.Allow, Reason: decision.Reason})
 		if !decision.Allow {
 			writeJSON(w, http.StatusForbidden, map[string]any{"allowed": false, "reason": decision.Reason})
+			return
+		}
+		if target.Metadata.ResourceVersion == "" {
+			audit.Log(s.log, audit.Entry{CallerID: caller(r), RemoteAddr: audit.RemoteAddr(r), Action: "scale", Account: targetConfig.Account, Namespace: targetConfig.Namespace, Pool: name, Count: req.Count, Allowed: false, Reason: "pool resourceVersion unavailable; write refused"})
+			http.Error(w, "pool revision unavailable", http.StatusBadGateway)
 			return
 		}
 
@@ -185,7 +274,7 @@ func (s *Server) scalePool(w http.ResponseWriter, r *http.Request) {
 		// decision was made against is stale and must be re-read, never
 		// applied over. (In-process this cannot fire — the mutex above
 		// serializes us — so a 409 always means an out-of-band writer.)
-		err = s.spot.ScaleNodePool(ctx, s.namespace, name, req.Count, target.Autoscaled(), target.Metadata.ResourceVersion)
+		err = targetConfig.Spot.ScaleNodePool(ctx, targetConfig.Namespace, name, req.Count, target.Autoscaled(), target.Metadata.ResourceVersion)
 		if err == nil {
 			writeJSON(w, http.StatusOK, map[string]any{"allowed": true, "pool": name, "count": req.Count, "reason": decision.Reason})
 			return
@@ -202,23 +291,15 @@ func (s *Server) scalePool(w http.ResponseWriter, r *http.Request) {
 			// Fail closed: every retry lost the race, so no ceiling-checked
 			// write ever landed.
 			s.log.Error("scale: conflict on every attempt, denying", "pool", name, "attempts", attempt, "err", err)
-			audit.Log(s.log, audit.Entry{CallerID: caller(r), RemoteAddr: audit.RemoteAddr(r), Action: "scale", Pool: name, Count: req.Count, Allowed: false, Reason: "pool changed concurrently on every attempt; request not applied"})
+			audit.Log(s.log, audit.Entry{CallerID: caller(r), RemoteAddr: audit.RemoteAddr(r), Action: "scale", Account: targetConfig.Account, Namespace: targetConfig.Namespace, Pool: name, Count: req.Count, Allowed: false, Reason: "pool changed concurrently on every attempt; request not applied"})
 			writeJSON(w, http.StatusConflict, map[string]any{"allowed": false, "reason": "pool changed concurrently on every attempt; retry later"})
 			return
-		case spot.IsPreconditionRejected(err) && target.Metadata.ResourceVersion != "":
-			// The upstream refused the resourceVersion-carrying patch shape
-			// outright (behavior not verifiable from the dev box — see
-			// docs/notes/invariant-policy.md "Concurrency"). Retry once without
-			// the precondition: the patch itself is unchanged and
-			// single-flight still guards the ceiling in-process.
-			s.log.Warn("scale: upstream rejected resourceVersion precondition, retrying patch without it",
-				"pool", name, "err", err)
-			if err := s.spot.ScaleNodePool(ctx, s.namespace, name, req.Count, target.Autoscaled(), ""); err != nil {
-				s.log.Error("scale: apply", "pool", name, "err", err)
-				http.Error(w, "upstream error applying scale", http.StatusBadGateway)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"allowed": true, "pool": name, "count": req.Count, "reason": decision.Reason})
+		case spot.IsPreconditionRejected(err):
+			// Never drop the revision precondition: a bid may have changed
+			// since the pool snapshot used for the grandfathering decision.
+			s.log.Error("scale: upstream rejected resourceVersion precondition", "pool", name, "err", err)
+			audit.Log(s.log, audit.Entry{CallerID: caller(r), RemoteAddr: audit.RemoteAddr(r), Action: "scale", Account: targetConfig.Account, Namespace: targetConfig.Namespace, Pool: name, Count: req.Count, Allowed: false, Reason: "upstream rejected concurrency precondition; request not applied"})
+			http.Error(w, "upstream rejected concurrency precondition", http.StatusBadGateway)
 			return
 		default:
 			s.log.Error("scale: apply", "pool", name, "err", err)

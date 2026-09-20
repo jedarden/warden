@@ -348,6 +348,7 @@ func clearEnv() {
 		"WARDEN_ALLOWED_SERVER_CLASSES",
 		"WARDEN_CALLER_TOKENS",
 		"WARDEN_REQUEST_TIMEOUT",
+		"WARDEN_TARGETS_JSON",
 	}
 	for _, v := range envVars {
 		os.Unsetenv(v)

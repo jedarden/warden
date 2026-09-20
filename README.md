@@ -1,5 +1,13 @@
 # warden
 
+Warden also supports explicit routing across multiple Spot accounts and
+organizations. In that mode, targets are read-only by default and every scale
+request checks the current server-class minimum; a pool bidding below it is
+immutable through Warden. See
+[multiple accounts and grandfathered bids](docs/notes/multi-account-protection.md)
+for configuration and scoped routes. The existing single-organization API
+remains available for the current deployment.
+
 > **Status — paused internal tooling:** the implementation is specific to the
 > author's Rackspace Spot environment and has no public release. Its policy
 > model is expected to move into [SEAM](https://github.com/jedarden/SEAM).

@@ -13,6 +13,8 @@ type Entry struct {
 	CallerID   string // non-secret caller fingerprint (never the raw token)
 	RemoteAddr string
 	Action     string
+	Account    string
+	Namespace  string
 	Pool       string
 	Count      int
 	Allowed    bool
@@ -25,6 +27,8 @@ func Log(l *slog.Logger, e Entry) {
 		"caller", e.CallerID,
 		"remote_addr", e.RemoteAddr,
 		"action", e.Action,
+		"account", e.Account,
+		"namespace", e.Namespace,
 		"pool", e.Pool,
 		"count", e.Count,
 		"allowed", e.Allowed,

@@ -36,9 +36,27 @@ func main() {
 		os.Exit(1)
 	}
 
-	sc := spot.NewClient(cfg.SpotBaseURL, cfg.SpotTokenURL, cfg.SpotClientID, cfg.SpotRefreshToken, cfg.RequestTimeout)
-	pol := policy.NewConfig(cfg.MaxTotalNodes, cfg.AllowedServerClasses, cfg.MaxBidPrice)
-	srv := server.New(cfg.OrgNamespace, pol, sc, cfg.CallerTokens, log, cfg.RequestTimeout)
+	clients := make(map[string]*spot.Client)
+	targets := make([]*server.Target, 0, len(cfg.Targets))
+	for _, configured := range cfg.Targets {
+		client := clients[configured.Account]
+		if client == nil {
+			client = spot.NewClient(cfg.SpotBaseURL, cfg.SpotTokenURL, cfg.SpotClientID, configured.RefreshToken, cfg.RequestTimeout)
+			clients[configured.Account] = client
+		}
+		targets = append(targets, &server.Target{
+			Account: configured.Account, Namespace: configured.Namespace,
+			Spot: client, AllowScale: configured.AllowScale,
+			Policy: policy.NewConfig(configured.MaxTotalNodes, configured.AllowedServerClasses, configured.MaxBidPrice),
+		})
+	}
+	var srv *server.Server
+	if cfg.MultiTarget {
+		srv = server.NewMulti(targets, cfg.CallerTokens, log, cfg.RequestTimeout)
+	} else {
+		legacy := targets[0]
+		srv = server.New(legacy.Namespace, legacy.Policy, legacy.Spot, cfg.CallerTokens, log, cfg.RequestTimeout)
+	}
 
 	httpSrv := &http.Server{
 		Handler:           srv.Handler(),
@@ -52,10 +70,7 @@ func main() {
 	}
 	log.Info("warden listening",
 		"addr", ln.Addr().String(),
-		"namespace", cfg.OrgNamespace,
-		"max_total_nodes", cfg.MaxTotalNodes,
-		"allowed_classes", cfg.AllowedServerClasses,
-		"max_bid", cfg.MaxBidPrice,
+		"configured_organizations", len(targets),
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -30,8 +30,8 @@ var ErrConflict = errors.New("conflict")
 // ErrPreconditionRejected wraps errors from a patch the upstream refused
 // outright (HTTP 400/422) while carrying a resourceVersion — i.e. the API
 // rejected the precondition-carrying patch shape, not the count itself. The
-// server responds by retrying the patch without the precondition (see
-// docs/notes/invariant-policy.md, "Concurrency").
+// server refuses the write. Dropping the precondition could mutate a pool
+// whose bid changed after the snapshot used for the policy decision.
 var ErrPreconditionRejected = errors.New("precondition rejected")
 
 // IsConflict reports whether err came from a lost optimistic-concurrency race.
@@ -149,6 +149,27 @@ func (c *Client) nodePoolsPath(ns string) string {
 	return fmt.Sprintf("/apis/ngpc.rxt.io/v1/namespaces/%s/spotnodepools", url.PathEscape(ns))
 }
 
+// GetServerClass returns the current new-bid floor for a class. A failed read
+// must prevent scaling: warden cannot know whether an old bid is protected.
+func (c *Client) GetServerClass(ctx context.Context, name string) (*ServerClass, error) {
+	path := "/apis/ngpc.rxt.io/v1/serverclasses/" + url.PathEscape(name)
+	rb, status, err := c.do(ctx, http.MethodGet, path, "", nil)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("get serverclass: status %d", status)
+	}
+	var class ServerClass
+	if err := json.Unmarshal(rb, &class); err != nil {
+		return nil, fmt.Errorf("get serverclass decode: %w", err)
+	}
+	if class.Metadata.Name != name {
+		return nil, fmt.Errorf("get serverclass: response name mismatch")
+	}
+	return &class, nil
+}
+
 // ListNodePools returns all SpotNodePools in the org namespace.
 func (c *Client) ListNodePools(ctx context.Context, ns string) ([]NodePool, error) {
 	rb, status, err := c.do(ctx, http.MethodGet, c.nodePoolsPath(ns), "", nil)
@@ -193,11 +214,10 @@ func (c *Client) GetNodePool(ctx context.Context, ns, name string) (*NodePool, e
 // invariant-policy.md, "Scale semantics"). serverClass and bidPrice are never
 // included in the patch, so they cannot change through warden.
 // expectedResourceVersion carries the resourceVersion from the snapshot the
-// scale decision was made against. When non-empty it is echoed in the patch's
-// metadata, which on APIs with Kubernetes semantics makes the patch an
-// optimistic-concurrency check: a mismatch is rejected with 409 (surfaced as
-// ErrConflict) instead of silently overwriting the newer state. When the
-// snapshot has no resourceVersion, none is sent and the patch is unconditional.
+// scale decision was made against. It is echoed in the patch's metadata,
+// which makes the patch an optimistic-concurrency check: a mismatch is
+// rejected with 409 (surfaced as ErrConflict). The caller refuses writes
+// when the snapshot lacks a resourceVersion.
 func (c *Client) ScaleNodePool(ctx context.Context, ns, name string, count int, autoscaled bool, expectedResourceVersion string) error {
 	var spec map[string]any
 	if autoscaled {

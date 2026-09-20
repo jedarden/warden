@@ -16,7 +16,7 @@ import (
 // order. An audit record carries nothing else — any additional key would be a
 // place for an unsanitized value to surface in the tamper-evident trail.
 var documentedKeys = []string{
-	"caller", "remote_addr", "action", "pool", "count", "allowed", "reason",
+	"caller", "remote_addr", "action", "account", "namespace", "pool", "count", "allowed", "reason",
 }
 
 // slogEnvelope are the keys slog's JSONHandler adds around the payload.
@@ -94,6 +94,8 @@ func TestLogAllowAndDeny(t *testing.T) {
 				"caller":      tt.entry.CallerID,
 				"remote_addr": tt.entry.RemoteAddr,
 				"action":      tt.entry.Action,
+				"account":     tt.entry.Account,
+				"namespace":   tt.entry.Namespace,
 				"pool":        tt.entry.Pool,
 				"count":       float64(tt.entry.Count),
 				"allowed":     tt.entry.Allowed,

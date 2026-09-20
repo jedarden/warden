@@ -54,6 +54,15 @@ type NodePoolList struct {
 	Items []NodePool `json:"items"`
 }
 
+// ServerClass carries the published minimum for *new* bids. It is distinct
+// from the current market price; existing bids below it are grandfathered.
+type ServerClass struct {
+	Metadata Metadata `json:"metadata"`
+	Spec     struct {
+		MinBidPricePerHour string `json:"minBidPricePerHour"`
+	} `json:"spec"`
+}
+
 // UpperBound is the maximum number of nodes this pool can contribute to the
 // org total: the autoscaling ceiling if autoscaling is enabled, otherwise the
 // fixed desired count.

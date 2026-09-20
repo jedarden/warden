@@ -85,16 +85,15 @@ design needs it to:
   write, it does not apply-and-conflict.
 - A no-op patch does not bump the RV; only real modifications do.
 - Wrinkle: ngpc parses the RV as uint64, so a non-numeric RV gets HTTP **500**
-  (`strconv.ParseUint` failure), not 409/422 — the 400/422 fallback below
-  should never fire on this API, and a malformed RV fails closed through the
+  (`strconv.ParseUint` failure), not 409/422. A malformed RV fails closed through the
   generic error path instead (502 to the caller, nothing applied). warden only
   ever echoes RVs the API issued; `TestScaleNodePoolServerErrorStaysGeneric`
   pins that classification.
 
-The 400/422 fallback stays as defense for a future upstream that rejects the
-RV-carrying patch shape outright (warden then retries once without the
-precondition and the ceiling rests on layer 1 alone, the topology-correct
-guarantee).
+Warden refuses to patch when the snapshot lacks a resourceVersion. If an
+upstream rejects an RV-carrying patch with 400/422, Warden returns 502 without
+an unconditional retry. This also protects a grandfathered bid from a pool
+change between the policy read and the attempted write.
 
 `TestConcurrentScaleNeverExceedsOrgCeiling` pins layer 1: its fake upstream
 applies patches unconditionally (deliberately no server-side CAS — the
