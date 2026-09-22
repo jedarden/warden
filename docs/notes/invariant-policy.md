@@ -107,10 +107,10 @@ with a final audited deny); the wire sequence they encode — 409 on a stale RV,
 then success on a fresh-RV patch — is what the live probe reproduced against
 the real API.
 
-**Verified ≠ deployed:** the image currently running (`warden:0.1.0`, built
-before the fix) contains neither layer. Shipping the fixed binary is a
-separate rollout (declarative-config + new tag), deliberately not part of the
-verification.
+Both layers are deployed in `warden:0.2.0` as of 2026-09-22. The rollout used
+`declarative-config` commit `abbd0485`; ArgoCD Application
+`warden-ns-rs-manager` was Synced and Healthy, the pod reported Ready on the
+published image digest, and authenticated list plus policy-denial checks passed.
 
 Any input warden cannot fully evaluate is denied:
 

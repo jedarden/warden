@@ -134,15 +134,17 @@ See `docs/notes/security-model.md`.
       `warden-9abf320c`.)
 - [x] Phase 3: Containerize (Argo `warden-build` WorkflowTemplate → `ronaldraygun/warden`,
       pinned semver tag) and deploy via `declarative-config` (`k8s/rs-manager/warden/`),
-      tailnet-only IngressRoute — live 2026-07-30, image `ronaldraygun/warden:0.1.0`.
+      tailnet-only IngressRoute — live since 2026-07-30; initial image `0.1.0`.
 - [x] Phase 3a: Add explicit multi-account/org targets, scoped routes, and
       grandfathered-bid protection in source (`e81e1b1`, version `0.2.0`).
       Isolated full tests, vet, and race tests passed. Bead `warden-09467b46`.
-- [ ] Phase 3b: Build `0.2.0`, update the rs-manager Warden image through
+- [x] Phase 3b: Build `0.2.0`, update the rs-manager Warden image through
       `declarative-config`, verify `warden-ns-rs-manager` is Synced and Healthy,
-      and check the live API. Enroll additional account/org targets only when
-      their namespaces and credential references are available. Bead
-      `warden-09467b46` remains open for release verification.
+      and check the live API. Completed 2026-09-22 via build workflow
+      `warden-build-manual-6splp` and deployment commit `abbd0485`.
+- [ ] Phase 3c: Enroll additional account/org targets when their namespaces and
+      credential references are available. The deployed configuration remains
+      the existing single-org compatibility mode until then.
 - [ ] Phase 4: Point a deterministic autoscaler (or the NEEDLE dispatcher) at
       warden; confirm scale-up / scale-to-zero end to end against a real pool.
 - [ ] Phase 5: Preemption-safety in the workers (release bead + clean worktree

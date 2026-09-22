@@ -29,7 +29,7 @@ spec:
         - name: warden
           # Semver tag from the repo's VERSION file — never :latest, never a bare
           # digest/SHA (declarative-config/k8s/CLAUDE.md rule 8).
-          image: ronaldraygun/warden:0.1.0
+          image: ronaldraygun/warden:0.2.0
           ports:
             - containerPort: 8080
           envFrom:

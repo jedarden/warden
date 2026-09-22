@@ -29,7 +29,8 @@ cluster uses (see `armor`, `traefik-forward-auth`, etc. in declarative-config).
 1. ~~Create the dedicated Spot org + a node pool~~ — done. The real pool is
    `ch.vs1.large-ord` on the `agent-sandbox` cloudspace (us-central-ord-1),
    which `deployment.yaml`'s `WARDEN_ALLOWED_SERVER_CLASSES` now matches.
-2. ~~Build the image~~ — done, `ronaldraygun/warden:0.1.0` via the `warden-build` WorkflowTemplate.
+2. ~~Build the image~~ — `ronaldraygun/warden:0.2.0` was built by
+   `warden-build-manual-6splp` and deployed on 2026-09-22.
 3. ~~Populate the two not-yet-stored OpenBao paths~~ — done (caller-tokens
    verified 2026-08-23; docker pull credentials synced before first deploy).
    Values travel by pipe or `@file`, never argv:
@@ -40,7 +41,10 @@ cluster uses (see `armor`, `traefik-forward-auth`, etc. in declarative-config).
    ```
 4. ~~Copy all manifests in this directory to `declarative-config` at `k8s/rs-manager/warden/`, commit, push~~ — done (landed 2026-07-30 through 2026-08-23; see the `warden/` history in declarative-config). ArgoCD syncs with its own in-cluster credentials.
 5. ~~Confirm the ExternalSecrets resolve and the pod comes up healthy~~ — done. All three ExternalSecrets report `SecretSynced=True`, certificate `warden-tls` is `Ready=True` (after the ingressroute issuer fix, see that file's comment), and the pod is Running.
-6. ~~Validate the live service~~ — done 2026-09-16 over the tailnet: `/healthz` answers unauthenticated (200), `GET /v1/pools` lists the agent org's pools with a real caller token, and a policy-deny scale (count 50 vs cap 10) is rejected with 403 and an audit record.
+6. ~~Validate the live service~~ — re-verified on 2026-09-22 after the `0.2.0`
+   rollout: `/healthz` answered 200, authenticated `GET /v1/pools` listed the
+   configured org, and a scale request for 50 nodes was denied with 403 against
+   the configured cap of 10.
 
 Remaining: hand the caller token to the autoscaler/dispatcher out-of-band (its
 own secret) and point it at warden — a separate, deliberate step.
