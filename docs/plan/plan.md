@@ -158,7 +158,9 @@ See `docs/notes/security-model.md`.
       (`warden-build-gfggr`, tag `v0.3.0`) and deployed through
       declarative-config (`eaca9490` dry-run, `cbe36b39` rollout fix,
       `c4d9f920` writes on); live in `waiting-for-pool` — the fire drill
-      runs once the user creates the pool.
+      runs once the user creates the pool. `0.3.1` (same day, user decision):
+      a guard restore always sets 2, and partial Spot fulfilment is never
+      read as a change (one follow-up alert, no re-scale).
 - [ ] Phase 4: Point a deterministic autoscaler (or the NEEDLE dispatcher) at
       warden; confirm scale-up / scale-to-zero end to end against a real pool.
 - [ ] Phase 5: Preemption-safety in the workers (release bead + clean worktree

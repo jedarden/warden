@@ -122,7 +122,8 @@ func (f *fakeSpot) SetFixedDesired(_ context.Context, ns, name string, count int
 		}
 		f.bump(p)
 		p.Spec.Desired = intp(count)
-		p.Status.WonCount = intp(count)
+		// Fulfilment lags the spec, as on Spot: status changes only via
+		// fulfill().
 		if f.applyThenErr != nil {
 			return nil, f.applyThenErr
 		}
@@ -149,6 +150,27 @@ func (f *fakeSpot) human(name string, change func(p *spot.NodePool)) {
 		if f.pools[i].Metadata.Name == name {
 			change(&f.pools[i])
 			f.bump(&f.pools[i])
+			return
+		}
+	}
+	panic("no pool " + name)
+}
+
+// fulfill changes only status.wonCount, the way Spot's controller does: the
+// resourceVersion moves, the spec generation does not.
+func (f *fakeSpot) fulfill(name string, won int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.pools {
+		if f.pools[i].Metadata.Name == name {
+			f.rv++
+			f.pools[i].Metadata.ResourceVersion = fmt.Sprint(f.rv)
+			f.pools[i].Status.WonCount = intp(won)
+			if won < *f.pools[i].Spec.Desired {
+				f.pools[i].Status.BidStatus = "PartiallyFulfilled"
+			} else {
+				f.pools[i].Status.BidStatus = "Fulfilled"
+			}
 			return
 		}
 	}
@@ -203,6 +225,17 @@ func (a *fakeAlerter) titles() []string {
 }
 
 func (a *fakeAlerter) count() int { a.mu.Lock(); defer a.mu.Unlock(); return len(a.alerts) }
+
+// matching returns the titles containing sub.
+func (a *fakeAlerter) matching(sub string) []string {
+	var out []string
+	for _, t := range a.titles() {
+		if strings.Contains(t, sub) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
 
 func (a *fakeAlerter) last() Alert {
 	a.mu.Lock()

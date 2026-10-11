@@ -19,18 +19,28 @@ Every poll (60 s) the guard reads `ServerClass/mh.vs1.large-iad`
 |---|---|
 | Market **strictly above** `0.012` and the pool is above 0 | Sets `spec.desired` to 0, records the off as its own, alerts **OFF** |
 | Market exactly `0.012` or below | Nothing (at the threshold is not above it) |
-| After its own off: market at or below `0.012` at every poll for 30 continuous minutes | Sets `spec.desired` to 2, alerts **RESTORED** |
+| After its own off: market at or below `0.012` at every poll for 30 continuous minutes | Sets `spec.desired` to 2 — always 2, whatever the pool held before the off — and alerts **RESTORED: desired 2, fulfilled N** |
+| After a restore Spot fulfils fewer nodes than desired (e.g. `wonCount` 1 of 2) | Nothing: `desired` stays 2, the scale is never re-issued. One follow-up alert (`fulfilment now N of 2`) once fulfilment has settled for 5 polls at a value other than the one RESTORED reported; never another |
 | Spike, unreadable price, or a gap in observations while holding | Restarts the 30-minute timer |
 | Someone else changed the pool after the guard's off (count, bid, class, cloudspace, autoscaling, any spec edit — detected by `metadata.generation`) | Drops its claim, alerts **released**, never restores it |
+| Spot fulfils fewer nodes than desired at any time (`status.wonCount` < `desired`, `bidStatus` not Fulfilled) | Not a change by anyone and not a fail-static: fulfilment status is read only for alert text |
 | Someone else changes the pool during a spike (e.g. scales it up deliberately) | Hands off until the price is back at or below the threshold; protects again on the next spike |
 | Pool at 0 that the guard did not turn off | Never restored |
-| Pool was at 1 before the guard's off | Turned off, but not auto-restored (the permit allows only 0 or 2); after 30 quiet minutes the guard alerts "restore it manually" and releases |
+| Pool was at 1 before the guard's off | Restored to 2 (user decision 2026-10-11: "Let it set 2. If rackspace spot can only provide 1 then the second node just stays inaccessible.") |
 | Pool was at 3 or more before the off | Restored to 2, never more |
 | Price or pool list unreadable, no matching pool ("waiting for pool"), more than one matching pool, pool autoscaled / missing `desired` / missing `resourceVersion`, state unreadable or unwritable | **Fail static**: changes nothing, alerts **FAIL-STATIC** once per condition |
 
 Every condition change is alerted once; a condition that persists is not
 re-alerted (also across restarts — the last alerted condition is part of the
 persisted state). Actions (off, restore, release) are always alerted.
+
+Change detection reads the **spec only** — `desired`, bid, class,
+cloudspace, autoscaling — plus `metadata.generation`, which counts spec
+changes and not status: production pools with months of fulfilment churn sit
+at generation 1–4 (apexalgo-iad, created 2025-05, is at 1; verified live
+2026-10-11). `status.wonCount`/`bidStatus` never feed a decision. Anything
+else that writes the pool's spec (another automation included) counts as
+someone else's change: the guard releases and never fights it.
 
 Known limits: a human who sets the pool to 0 while the guard already holds it
 at 0 makes a no-op write, which the API does not record (no generation bump),

@@ -170,25 +170,18 @@ func TestNeverAboveRestoreCount(t *testing.T) {
 		h.stepFor(31 * time.Minute)
 		h.mustDesired(2)
 	})
-	t.Run("pre-off 1 is turned off but never auto-restored", func(t *testing.T) {
+	t.Run("pre-off 1 restores to 2", func(t *testing.T) {
+		// User decision 2026-10-11: a guard restore always sets 2.
 		h := newHarness(t, newFakeSpot("0.005", 1))
 		h.step()
 		turnOff(t, h)
-		h.lastAlertContains("will NOT restore")
+		h.lastAlertContains("Will restore to 2")
 		h.spot.setPrice("0.005")
-		results := h.stepFor(31 * time.Minute)
-		h.mustDesired(0)
-		if got := h.spot.patchLog(); !reflect.DeepEqual(got, []patchRec{{guarded, 0}}) {
+		h.stepFor(31 * time.Minute)
+		h.mustDesired(2)
+		if got := h.spot.patchLog(); !reflect.DeepEqual(got, []patchRec{{guarded, 0}, {guarded, 2}}) {
 			t.Fatalf("patches = %v", got)
 		}
-		released := false
-		for _, r := range results {
-			released = released || r.Action == ActRelease
-		}
-		if !released {
-			t.Fatal("expected a release once quiet, telling the human to restore manually")
-		}
-		h.lastAlertContains("restore it manually")
 	})
 	t.Run("permit refuses any other count", func(t *testing.T) {
 		f := newFakeSpot("0.005", 2)
@@ -551,4 +544,122 @@ func TestAlertOnEveryTransition(t *testing.T) {
 			t.Fatalf("alerts %q missing %q", got, want)
 		}
 	}
+}
+
+func TestPartialFulfillmentAfterRestore(t *testing.T) {
+	h := newHarness(t, newFakeSpot("0.005", 2))
+	h.step()
+	turnOff(t, h)
+	h.spot.fulfill(guarded, 0) // nodes released after the off
+	h.spot.setPrice("0.005")
+	var restored bool
+	for _, r := range h.stepFor(31 * time.Minute) {
+		restored = restored || r.Action == ActRestore
+	}
+	if !restored {
+		t.Fatal("no restore")
+	}
+	h.mustDesired(2)
+	if got := h.alert.matching("RESTORED: desired 2, fulfilled 0"); len(got) != 1 {
+		t.Fatalf("RESTORED alert must name desired and fulfilled once: %v", h.alert.titles())
+	}
+	// Spot can only fill one node: it shows up, then stays at 1.
+	before := h.alert.count()
+	h.spot.fulfill(guarded, 1)
+	h.stepFor(2 * time.Hour)
+	if got := h.spot.patchLog(); !reflect.DeepEqual(got, []patchRec{{guarded, 0}, {guarded, 2}}) {
+		t.Fatalf("partial fulfilment re-issued a scale: %v", got)
+	}
+	h.mustDesired(2)
+	if got := h.alert.titles()[before:]; len(got) != 1 || !strings.Contains(got[0], "fulfilment now 1 of 2") {
+		t.Fatalf("want exactly one follow-up \"fulfilment now 1 of 2\", got %v", got)
+	}
+	// Later fulfilment changes are Spot's business: no further alerts.
+	h.spot.fulfill(guarded, 2)
+	h.stepFor(time.Hour)
+	h.spot.fulfill(guarded, 1)
+	h.stepFor(time.Hour)
+	if n := h.alert.count(); n != before+1 {
+		t.Fatalf("fulfilment churn re-alerted: %v", h.alert.titles()[before:])
+	}
+	if st := h.store.Snapshot(); st.Owned != nil || st.Condition != CondTracking || st.Fulfillment != nil {
+		t.Fatalf("state after follow-up: %+v", st)
+	}
+}
+
+func TestFulfillmentFollowUpReportsTheSettledValue(t *testing.T) {
+	h := newHarness(t, newFakeSpot("0.005", 2))
+	h.step()
+	turnOff(t, h)
+	h.spot.fulfill(guarded, 0)
+	h.spot.setPrice("0.005")
+	h.stepFor(31 * time.Minute)
+	before := h.alert.count()
+	// Nodes arrive one at a time: 1 for two polls, then 2.
+	h.spot.fulfill(guarded, 1)
+	h.stepFor(2 * time.Minute)
+	h.spot.fulfill(guarded, 2)
+	h.stepFor(30 * time.Minute)
+	if got := h.alert.titles()[before:]; len(got) != 1 || !strings.Contains(got[0], "fulfilment now 2 of 2") {
+		t.Fatalf("want one follow-up at the settled value 2 of 2, got %v", got)
+	}
+	// A restart after the follow-up never repeats it.
+	h.restart()
+	h.stepFor(30 * time.Minute)
+	if h.alert.count() != before+1 {
+		t.Fatalf("restart repeated the follow-up: %v", h.alert.titles()[before:])
+	}
+}
+
+func TestNoFollowUpWhenFulfillmentStaysAsReported(t *testing.T) {
+	h := newHarness(t, newFakeSpot("0.005", 2))
+	h.step()
+	turnOff(t, h)
+	h.spot.fulfill(guarded, 0)
+	h.spot.setPrice("0.005")
+	h.stepFor(31 * time.Minute)
+	before := h.alert.count()
+	h.stepFor(2 * time.Hour) // Spot never fills: the RESTORED alert already said 0
+	if h.alert.count() != before || len(h.spot.patchLog()) != 2 {
+		t.Fatalf("alerts %v patches %v", h.alert.titles()[before:], h.spot.patchLog())
+	}
+}
+
+func TestPartialFulfillmentIsNeverAHumanChange(t *testing.T) {
+	h := newHarness(t, newFakeSpot("0.005", 2))
+	h.spot.fulfill(guarded, 1) // tracking a pool Spot only half-fills
+	if r := h.step(); r.Condition != CondTracking {
+		t.Fatalf("partial fulfilment while tracking: %+v", r)
+	}
+	n := h.alert.count()
+	for _, won := range []int{0, 2, 1, 1, 0, 2} {
+		h.spot.fulfill(guarded, won)
+		if r := h.step(); r.Condition != CondTracking || r.Action != "" {
+			t.Fatalf("won=%d while tracking: %+v", won, r)
+		}
+	}
+	if h.alert.count() != n || len(h.spot.patchLog()) != 0 {
+		t.Fatalf("fulfilment churn while tracking: alerts %v patches %v", h.alert.titles()[n:], h.spot.patchLog())
+	}
+	// It still protects normally, and fulfilment changes while holding the
+	// off are not someone else's change.
+	h.spot.setPrice("0.02")
+	if r := h.step(); r.Action != ActOff {
+		t.Fatalf("expected off, got %+v", r)
+	}
+	h.spot.setPrice("0.005")
+	for _, won := range []int{2, 1, 1, 0} {
+		h.spot.fulfill(guarded, won)
+		if r := h.step(); r.Action == ActRelease || strings.HasPrefix(r.Condition, "fail-static") {
+			t.Fatalf("won=%d while holding was read as a change: %+v", won, r)
+		}
+	}
+	var restored bool
+	for _, r := range h.stepFor(30 * time.Minute) {
+		restored = restored || r.Action == ActRestore
+	}
+	if !restored {
+		t.Fatal("fulfilment changes while holding blocked the restore")
+	}
+	h.mustDesired(2)
 }

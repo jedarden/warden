@@ -50,6 +50,9 @@ type State struct {
 	// Seen is the last observed identity and spec generation of the matched
 	// pool, used to notice someone else changing it during a spike.
 	Seen *Seen `json:"seen,omitempty"`
+	// Fulfillment, set by a guard restore, drives the single follow-up alert
+	// when Spot's fulfilment of that pool later settles at another value.
+	Fulfillment *FulfillmentWatch `json:"fulfillment,omitempty"`
 	// Condition is the last alerted status; alerts fire when it changes.
 	Condition string    `json:"condition,omitempty"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -66,12 +69,21 @@ type Owned struct {
 	PreOffCount      int    `json:"preOffCount"`
 	PreOffGeneration int64  `json:"preOffGeneration"`
 	OffGeneration    int64  `json:"offGeneration,omitempty"`
-	// RestoreTo is restoreCount, or 0 when the pre-off count was below it
-	// (restoring would add nodes nobody had; the permit allows only 0 or
-	// restoreCount), in which case the guard alerts for a manual restore.
+	// RestoreTo is always restoreCount (user decision 2026-10-11), whatever
+	// PreOffCount was.
 	RestoreTo int       `json:"restoreTo"`
 	OffAt     time.Time `json:"offAt"`
 	Phase     string    `json:"phase"`
+}
+
+// FulfillmentWatch tracks status.wonCount after a guard restore, for
+// reporting only.
+type FulfillmentWatch struct {
+	Pool        string `json:"pool"`
+	UID         string `json:"uid,omitempty"`
+	Reported    *int   `json:"reported,omitempty"`
+	Candidate   *int   `json:"candidate,omitempty"`
+	StablePolls int    `json:"stablePolls,omitempty"`
 }
 
 // Seen is a pool identity plus spec generation.

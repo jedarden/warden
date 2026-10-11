@@ -226,6 +226,7 @@ func (g *Guard) tickArmed(ctx context.Context, now time.Time, pools []spot.NodeP
 		return g.failStatic(ctx, CondPoolShape, fmt.Sprintf("pool %s is not a well-formed fixed pool with a resourceVersion (autoscaled=%t)", p.Metadata.Name, p.Autoscaled()), res, true)
 	}
 	desired := *p.Spec.Desired
+	g.watchFulfillment(ctx, p)
 
 	// Someone else changed the pool's spec while the price stayed above the
 	// threshold: that is a deliberate decision made during the spike, so the
@@ -268,15 +269,16 @@ func (g *Guard) tickArmed(ctx context.Context, now time.Time, pools []spot.NodeP
 func (g *Guard) turnOff(ctx context.Context, now time.Time, pools []spot.NodePool, p spot.NodePool, res Result) Result {
 	st := g.state
 	desired := *p.Spec.Desired
+	// A guard restore always sets restoreCount, whatever the pool held before
+	// the off (user decision 2026-10-11: "Let it set 2. If rackspace spot can
+	// only provide 1 then the second node just stays inaccessible.").
 	restoreTo := g.cfg.RestoreCount
-	if desired < restoreTo {
-		restoreTo = 0
-	}
 	st.Owned = &Owned{Pool: p.Metadata.Name, UID: p.Metadata.UID, CloudSpace: p.Spec.CloudSpace, ServerClass: p.Spec.ServerClass,
 		BidPrice: p.Spec.BidPrice, PreOffCount: desired, PreOffGeneration: p.Metadata.Generation,
 		RestoreTo: restoreTo, OffAt: now, Phase: PhaseOffPending}
 	st.Armed = false
 	st.QuietSince = nil
+	st.Fulfillment = nil
 	// Intent is durable before the write, so a crash mid-write is reconciled
 	// from the pool's generation rather than forgotten.
 	if err := g.persist(ctx); err != nil {
@@ -309,9 +311,6 @@ func (g *Guard) confirmOff(ctx context.Context, p spot.NodePool, res Result, not
 	o.Phase = PhaseOff
 	st.Seen = &Seen{Pool: p.Metadata.Name, UID: p.Metadata.UID, Generation: p.Metadata.Generation}
 	restore := fmt.Sprintf("Will restore to %d after %s continuously at or below %s/h.", o.RestoreTo, g.cfg.RestoreAfter, g.cfg.OffAboveText)
-	if o.RestoreTo == 0 {
-		restore = fmt.Sprintf("It was at %d (not %d) before the off, so the guard will NOT restore it; it will alert when the price has been quiet for %s.", o.PreOffCount, g.cfg.RestoreCount, g.cfg.RestoreAfter)
-	}
 	g.act(ctx, CondHolding, g.alertf("high", []string{"rotating_light"},
 		"%s: pool turned OFF (market %s > %s)", "Scaled pool %s %d→0 because market %s/h is above %s/h.%s %s\n%s",
 		g.scope(), res.Price, g.cfg.OffAboveText, o.Pool, o.PreOffCount, res.Price, g.cfg.OffAboveText, note, restore, describe(p)))
@@ -387,10 +386,9 @@ func (g *Guard) tickOwned(ctx context.Context, now time.Time, pools []spot.NodeP
 		g.save(ctx)
 		return res
 	}
-	if o.RestoreTo == 0 {
-		return g.release(ctx, p, high, res, fmt.Sprintf("price has been at or below %s/h for %s, but %s was at %d (not %d) before the guard's off; restore it manually if wanted",
-			g.cfg.OffAboveText, g.cfg.RestoreAfter, o.Pool, o.PreOffCount, g.cfg.RestoreCount))
-	}
+	// Claims persisted by an older build may carry another target; a guard
+	// restore is always restoreCount.
+	o.RestoreTo = g.cfg.RestoreCount
 	if n := len(Matches(pools, g.cfg.CloudSpace, g.cfg.ServerClass)); n != 1 {
 		return g.failStatic(ctx, CondAmbiguous, fmt.Sprintf("restore due but %d pools match cloudspace %s class %s; not writing", n, g.cfg.CloudSpace, g.cfg.ServerClass), res, true)
 	}
@@ -437,13 +435,73 @@ func (g *Guard) finishRestore(ctx context.Context, p spot.NodePool, res Result, 
 	o := st.Owned
 	st.Owned, st.QuietSince, st.Armed = nil, nil, true
 	st.Seen = &Seen{Pool: p.Metadata.Name, UID: p.Metadata.UID, Generation: p.Metadata.Generation}
+	won := wonOf(p)
+	st.Fulfillment = &FulfillmentWatch{Pool: p.Metadata.Name, UID: p.Metadata.UID, Reported: won}
 	g.act(ctx, CondTracking, g.alertf("default", []string{"white_check_mark"},
-		"%s: pool RESTORED to %d", "Scaled pool %s 0→%d: market %s/h has been at or below %s/h for %s since the guard's off at %s.%s\n%s",
-		g.scope(), o.RestoreTo, o.Pool, o.RestoreTo, res.Price, g.cfg.OffAboveText, g.cfg.RestoreAfter, o.OffAt.UTC().Format(time.RFC3339), note, describe(p)))
+		"%s: pool RESTORED: desired %d, fulfilled %s", "Scaled pool %s 0→%d: market %s/h has been at or below %s/h for %s since the guard's off at %s.%s Spot fulfils the bid on its own schedule; the guard does not re-issue the scale and sends one follow-up if fulfilment changes.\n%s",
+		g.scope(), o.RestoreTo, countText(won), o.Pool, o.RestoreTo, res.Price, g.cfg.OffAboveText, g.cfg.RestoreAfter, o.OffAt.UTC().Format(time.RFC3339), note, describe(p)))
 	g.save(ctx)
 	res.Action, res.Condition, res.Pool = ActRestore, CondTracking, o.Pool
 	res.Detail = fmt.Sprintf("scaled %s 0→%d", o.Pool, o.RestoreTo)
 	return res
+}
+
+// fulfillmentSettlePolls is how many consecutive polls a changed fulfilment
+// must hold before the single post-restore follow-up is sent, so a pool
+// filling 0→1→2 reports once, at its settled value.
+const fulfillmentSettlePolls = 5
+
+// watchFulfillment sends at most one follow-up after a guard restore, when
+// status.wonCount has settled at a value other than the one the RESTORED alert
+// reported. It is reporting only: fulfilment never feeds a decision, never
+// counts as anyone's change, and never causes a write (Spot filling fewer
+// nodes than desired is the market, not a human).
+func (g *Guard) watchFulfillment(ctx context.Context, p spot.NodePool) {
+	st := g.state
+	w := st.Fulfillment
+	if w == nil {
+		return
+	}
+	if p.Metadata.Name != w.Pool || (w.UID != "" && p.Metadata.UID != w.UID) {
+		st.Fulfillment = nil
+		return
+	}
+	won := wonOf(p)
+	if won == nil || (w.Reported != nil && *won == *w.Reported) {
+		w.Candidate, w.StablePolls = nil, 0
+		return
+	}
+	if w.Candidate != nil && *w.Candidate == *won {
+		w.StablePolls++
+	} else {
+		w.Candidate, w.StablePolls = won, 1
+	}
+	if w.StablePolls < fulfillmentSettlePolls {
+		return
+	}
+	st.Fulfillment = nil
+	desired := 0
+	if p.Spec.Desired != nil {
+		desired = *p.Spec.Desired
+	}
+	g.act(ctx, g.lastCondition, g.alertf("low", []string{"information_source"},
+		"%s: fulfilment now %d of %d", "Since the guard's restore Spot fulfilment changed from %s to %d (desired %d). No action taken; this is the only follow-up.\n%s",
+		g.scope(), *won, desired, countText(w.Reported), *won, desired, describe(p)))
+}
+
+func wonOf(p spot.NodePool) *int {
+	if p.Status.WonCount == nil {
+		return nil
+	}
+	n := *p.Status.WonCount
+	return &n
+}
+
+func countText(n *int) string {
+	if n == nil {
+		return "unknown"
+	}
+	return fmt.Sprint(*n)
 }
 
 // release drops the guard's claim without writing anything. Armed stays off
