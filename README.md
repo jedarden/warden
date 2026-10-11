@@ -35,6 +35,19 @@ clusters, two boundaries compose:
 2. **warden** holds that org's token and enforces fine-grained invariants the
    coarse IAM can't — the ceiling.
 
+## Spot price guard (main org, one pool)
+
+warden also runs an internal **price guard** for one pool in the main Spot
+organization: the iad-ci `mh.vs1.large-iad` pool. Above `$0.012/h` market it
+scales that pool to 0; after 30 continuous minutes at or below, it restores
+its own off to 2 nodes (never more). It never overrides a human's change,
+never touches another pool, fails static (changes nothing) and alerts when
+anything is unreadable or ambiguous, and alerts every transition on the
+existing ntfy paging topic. Its write permission is internal and narrower than
+the caller API — callers cannot list or scale main-org pools. See
+[`docs/notes/spot-price-guard.md`](docs/notes/spot-price-guard.md) (behaviour,
+permission, state, rollout, and the repeatable fire drill).
+
 ## What it enforces
 
 - **Max total nodes** across the whole org (default **10**) — a true ceiling
@@ -106,6 +119,7 @@ the single namespace are in [`docs/notes/configuration.md`](docs/notes/configura
 
 - `cmd/warden/` — entrypoint
 - `internal/policy/` — the enforcement core (pure, exhaustively tested)
+- `internal/guard/` — the Spot price guard: state machine, narrow write permit, ConfigMap state store, ntfy alerts
 - `internal/spot/` — Rackspace Spot API client + OAuth token manager
 - `internal/server/` — the intent API + caller auth + audit
 - `deploy/` — manifests for the rs-manager deployment, **live since 2026-07-30** (image `ronaldraygun/warden:0.2.0`, reachable at `warden-rs-manager.ardenone.com:8444` over the tailnet). Source of truth is `declarative-config` at `k8s/rs-manager/warden/`, synced by ArgoCD Application `warden-ns-rs-manager`; this copy is a staging mirror — never applied with `kubectl` directly

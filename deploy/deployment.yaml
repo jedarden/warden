@@ -7,6 +7,10 @@ metadata:
     app: warden
 spec:
   replicas: 1
+  # Recreate, not RollingUpdate: the Spot price guard must never run as two
+  # instances at once (its state store would also refuse the second writer).
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: warden
@@ -15,6 +19,9 @@ spec:
       labels:
         app: warden
     spec:
+      # Own ServiceAccount: the price guard reads/writes its state ConfigMap
+      # (spot-guard-rbac.yaml). Nothing else is granted.
+      serviceAccountName: warden
       imagePullSecrets:
         - name: docker-hub-registry
       securityContext:
@@ -29,7 +36,7 @@ spec:
         - name: warden
           # Semver tag from the repo's VERSION file — never :latest, never a bare
           # digest/SHA (declarative-config/k8s/CLAUDE.md rule 8).
-          image: ronaldraygun/warden:0.2.0
+          image: ronaldraygun/warden:0.3.0
           ports:
             - containerPort: 8080
           envFrom:
@@ -37,6 +44,8 @@ spec:
                 name: warden-spot-credentials   # WARDEN_SPOT_REFRESH_TOKEN
             - secretRef:
                 name: warden-caller-tokens      # WARDEN_CALLER_TOKENS
+            - secretRef:
+                name: warden-spot-guard         # WARDEN_SPOT_REFRESH_TOKEN_APEXALGO, WARDEN_ALERT_NTFY_URL/_TOKEN
           env:
             - name: WARDEN_ORG_NAMESPACE
               # Not a secret — the dedicated apexalgo-agent org's namespace,
@@ -50,6 +59,14 @@ spec:
               value: "ch.vs1.large-ord"
             - name: WARDEN_MAX_BID_PRICE
               value: "0.01"   # Spot raised the gp.vs1.medium floor to 0.01/hr (was 0.001); verified via serverclasses API 2026-07-27
+            - name: WARDEN_SPOT_GUARD_JSON
+              # Spot price guard (warden docs/notes/spot-price-guard.md, bead
+              # warden-faf60f86). User decision 2026-10-11: iad-ci
+              # mh.vs1.large-iad pool, bid 0.015, off above 0.012/h, restore
+              # after 30 min, max 2 nodes. The main org is NOT a caller target;
+              # the guard's own permit covers only this pool and counts {0, 2}.
+              # dryRun:true = observe and alert, never write.
+              value: '{"account":"apexalgo","namespace":"org-kselolwaoxl3zxfm","refreshTokenEnv":"WARDEN_SPOT_REFRESH_TOKEN_APEXALGO","cloudSpace":"iad-ci","serverClass":"mh.vs1.large-iad","offAbovePerHour":"0.012","restoreAfter":"30m","restoreCount":2,"pollInterval":"60s","dryRun":true,"stateConfigMap":"warden-spot-guard-state"}'
           resources:
             requests:
               cpu: 25m

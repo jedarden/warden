@@ -15,6 +15,16 @@ callers we don't fully trust, without ever handing them that token.
    or buggy: the worker fleet is damaged; production trading infra is untouched
    because it isn't in this token's org.
 
+   **Exception — the price guard (2026-10-11).** warden also holds a
+   **main-org** refresh token (the org with the production trading clusters)
+   for its internal Spot price guard. For that credential the floor does not
+   apply; what bounds it instead: the main org is never a caller target
+   (config refuses `allowScale` on it), the guard's only write path is a
+   `Permit` limited to one pool (iad-ci, `mh.vs1.large-iad`) and a count of
+   exactly 0 or 2, the patch can express nothing but `spec.desired` with a
+   `resourceVersion` precondition, and dry-run builds no writer at all. See
+   `spot-price-guard.md`.
+
 2. **Credential separation (primary control).** The Spot refresh token lives
    only inside warden (env from an ExternalSecret sourced from rs-manager's
    in-cluster OpenBao — rs-manager has no SealedSecrets controller). Agents

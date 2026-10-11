@@ -31,6 +31,9 @@ type Config struct {
 	RequestTimeout       time.Duration
 	Targets              []Target
 	MultiTarget          bool
+	// Guard is the internal Spot price guard; nil when WARDEN_SPOT_GUARD_JSON
+	// is unset.
+	Guard *Guard
 }
 
 // Target binds one configured organization to an account credential and an
@@ -115,7 +118,16 @@ func Load() (*Config, error) {
 		}}
 	}
 
-	return c, c.validate()
+	if raw := os.Getenv("WARDEN_SPOT_GUARD_JSON"); raw != "" {
+		if err := c.loadGuard(raw); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := c.validate(); err != nil {
+		return c, err
+	}
+	return c, c.validateGuard()
 }
 
 func (c *Config) loadTargets(raw string) error {

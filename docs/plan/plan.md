@@ -65,6 +65,9 @@ NEEDLE workers / autoscaler          warden (in rs-manager, tailnet-only)       
 - `internal/server` — scoped account/org intent API, legacy single-org routes,
   constant-time caller-token auth, audit logging.
 - `internal/audit` — structured decision log (allow + deny).
+- `internal/guard` — internal Spot price guard for one main-org pool: state
+  machine, a write `Permit` limited to that pool and counts {0, 2},
+  ConfigMap-persisted state, ntfy alerts.
 - `cmd/warden` — wiring + graceful shutdown.
 - `deploy/` — manifests for the rs-manager deployment; landed in `declarative-config` and live since 2026-07-30.
 
@@ -145,6 +148,13 @@ See `docs/notes/security-model.md`.
 - [ ] Phase 3c: Enroll additional account/org targets when their namespaces and
       credential references are available. The deployed configuration remains
       the existing single-org compatibility mode until then.
+- [ ] Phase 3d: Spot price guard for the main-org iad-ci `mh.vs1.large-iad`
+      pool (user decision 2026-10-11; bead `warden-faf60f86`): off above
+      `0.012`/h, restore its own off to 2 after 30 continuous quiet minutes,
+      never fight a human, fail static and alert on anything unreadable.
+      `internal/guard`, version `0.3.0`; dry-run first, then writes, then a
+      live fire drill before any iad-ci cutover
+      (`docs/notes/spot-price-guard.md`).
 - [ ] Phase 4: Point a deterministic autoscaler (or the NEEDLE dispatcher) at
       warden; confirm scale-up / scale-to-zero end to end against a real pool.
 - [ ] Phase 5: Preemption-safety in the workers (release bead + clean worktree

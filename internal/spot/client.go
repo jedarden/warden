@@ -250,6 +250,51 @@ func (c *Client) ScaleNodePool(ctx context.Context, ns, name string, count int, 
 	return nil
 }
 
+// SetFixedDesired sets spec.desired on an existing FIXED pool and returns the
+// object the upstream reports after the write. It exists for warden's
+// internal price guard, which never patches autoscaling fields: the patch
+// carries spec.desired and the mandatory resourceVersion precondition and
+// nothing else, so class, bid, cloudspace and autoscaling cannot change
+// through it. A missing resourceVersion is refused before any request is
+// sent. The returned pool is nil (with a nil error) when the upstream accepted
+// the write but its response body did not decode; callers must then treat
+// the outcome as unconfirmed and re-read.
+func (c *Client) SetFixedDesired(ctx context.Context, ns, name string, count int, expectedResourceVersion string) (*NodePool, error) {
+	if expectedResourceVersion == "" {
+		return nil, fmt.Errorf("patch spotnodepool: %w: resourceVersion required", ErrPreconditionRejected)
+	}
+	if count < 0 {
+		return nil, fmt.Errorf("patch spotnodepool: negative count %d", count)
+	}
+	body, err := json.Marshal(map[string]any{
+		"metadata": map[string]any{"resourceVersion": expectedResourceVersion},
+		"spec":     map[string]any{"desired": count},
+	})
+	if err != nil {
+		return nil, err
+	}
+	rb, status, err := c.do(ctx, http.MethodPatch, c.nodePoolsPath(ns)+"/"+url.PathEscape(name),
+		"application/merge-patch+json", body)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case status == http.StatusConflict:
+		return nil, fmt.Errorf("patch spotnodepool: %w: status %d: %s", ErrConflict, status, truncate(rb))
+	case status == http.StatusBadRequest || status == http.StatusUnprocessableEntity:
+		return nil, fmt.Errorf("patch spotnodepool: %w: status %d: %s", ErrPreconditionRejected, status, truncate(rb))
+	case status == http.StatusNotFound:
+		return nil, ErrNotFound
+	case status < 200 || status >= 300:
+		return nil, fmt.Errorf("patch spotnodepool: status %d: %s", status, truncate(rb))
+	}
+	var np NodePool
+	if err := json.Unmarshal(rb, &np); err != nil || np.Metadata.Name != name {
+		return nil, nil
+	}
+	return &np, nil
+}
+
 func truncate(b []byte) string {
 	const max = 300
 	if len(b) > max {

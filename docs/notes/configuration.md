@@ -40,12 +40,23 @@ Missing or invalid ⇒ startup error naming the variable
 | `WARDEN_CALLER_TOKENS` | — | **yes** | Caller bearer-token allowlist (see above) |
 | `WARDEN_REQUEST_TIMEOUT` | `30s` | no | Go duration; doubles as the Spot client's HTTP timeout and the per-request handler deadline. Exceeding it surfaces as `502` to the caller. |
 
+Spot price guard (optional; see [`spot-price-guard.md`](spot-price-guard.md)):
+
+| Variable | Default | Required | Meaning |
+|----------|---------|----------|---------|
+| `WARDEN_SPOT_GUARD_JSON` | unset (no guard) | no | Guard target, threshold, timing, `dryRun` (defaults to `true`) |
+| `WARDEN_SPOT_REFRESH_TOKEN_<ACCOUNT>` | — | with the guard | The guarded org's refresh token, named by the guard's `refreshTokenEnv` (deployed: `..._APEXALGO`, main org) |
+| `WARDEN_ALERT_NTFY_URL` | — | with the guard | Existing ntfy paging topic URL — a credential, never logged |
+| `WARDEN_ALERT_NTFY_TOKEN` | empty | no | Optional ntfy bearer token |
+
 Not configurable (compile-time constants):
 
 - `maxScaleAttempts = 4` in `internal/server/server.go` — the
   optimistic-concurrency retry budget (one planned attempt + three
   re-decisions). Exhaustion ⇒ `409` to the caller
   ([`api.md`](api.md)).
+- `MaxGuardRestoreCount = 2` in `internal/config/guard.go` — the most nodes
+  the price guard may ever write (user decision 2026-10-11).
 
 ## Empty-value semantics
 

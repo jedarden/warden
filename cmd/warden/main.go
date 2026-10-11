@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"git.ardenone.com/jedarden/warden/internal/config"
+	"git.ardenone.com/jedarden/warden/internal/guard"
 	"git.ardenone.com/jedarden/warden/internal/policy"
 	"git.ardenone.com/jedarden/warden/internal/server"
 	"git.ardenone.com/jedarden/warden/internal/spot"
@@ -63,6 +64,16 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// Build the guard before listening: a guard that cannot start must not
+	// leave a half-configured process serving.
+	var spotGuard *guard.Guard
+	if cfg.Guard != nil {
+		if spotGuard, err = newGuard(cfg, log); err != nil {
+			log.Error("spot guard", "err", err)
+			os.Exit(1)
+		}
+	}
+
 	ln, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		log.Error("listen", "addr", cfg.ListenAddr, "err", err)
@@ -75,10 +86,38 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if spotGuard != nil {
+		go spotGuard.Run(ctx)
+	}
 	if err := serve(ctx, log, httpSrv, ln, shutdownGrace); err != nil {
 		log.Error("http server", "err", err)
 		os.Exit(1)
 	}
+}
+
+// newGuard builds the internal Spot price guard. It gets its own Spot client
+// (never one of the caller targets' clients) and a Permit bound to its one
+// pool; in dry-run mode the Permit has no writer at all, so no code path can
+// reach a Spot write.
+func newGuard(cfg *config.Config, log *slog.Logger) (*guard.Guard, error) {
+	gc := cfg.Guard
+	client := spot.NewClient(cfg.SpotBaseURL, cfg.SpotTokenURL, cfg.SpotClientID, gc.RefreshToken, cfg.RequestTimeout)
+	var writer guard.Writer
+	if !gc.DryRun {
+		writer = client
+	}
+	permit := guard.NewPermit(gc.Namespace, gc.CloudSpace, gc.ServerClass, gc.RestoreCount, writer)
+	store, err := guard.NewInClusterConfigMapStore(gc.StateConfigMap, cfg.RequestTimeout)
+	if err != nil {
+		return nil, err
+	}
+	alerter := guard.NewNtfy(gc.NtfyURL, gc.NtfyToken, 20*time.Second)
+	return guard.New(guard.Config{
+		Namespace: gc.Namespace, CloudSpace: gc.CloudSpace, ServerClass: gc.ServerClass,
+		OffAboveNanos: gc.OffAboveNanos, OffAboveText: gc.OffAbovePerHour,
+		RestoreAfter: gc.RestoreAfter, RestoreCount: gc.RestoreCount,
+		PollInterval: gc.PollInterval, DryRun: gc.DryRun,
+	}, client, permit, store, alerter, log.With("component", "spot-guard", "account", gc.Account), time.Now), nil
 }
 
 // serve runs httpSrv on ln until ctx is cancelled or Serve fails fatally.

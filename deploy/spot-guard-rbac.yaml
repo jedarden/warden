@@ -1,0 +1,42 @@
+# The Spot price guard persists its state (which pool it turned off, when, at
+# what generation) in ConfigMap warden-spot-guard-state in this namespace, so a
+# restart never loses its claim or mistakes a human's change for its own. The
+# ConfigMap is created by warden itself at first save — it is not an ArgoCD
+# resource and carries no credential. Updates carry its resourceVersion, so a
+# second instance fails static rather than overwriting.
+#
+# `create` cannot be narrowed by resourceName in Kubernetes RBAC; it is
+# namespace-scoped to `warden`. get/update are limited to the one name.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: warden
+  namespace: warden
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: warden-spot-guard-state
+  namespace: warden
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["warden-spot-guard-state"]
+    verbs: ["get", "update"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: warden-spot-guard-state
+  namespace: warden
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: warden-spot-guard-state
+subjects:
+  - kind: ServiceAccount
+    name: warden
+    namespace: warden

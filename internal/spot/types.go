@@ -18,8 +18,17 @@ import (
 //
 // The Autoscaling struct uses camelCase: minNodes, maxNodes (not snake_case).
 type NodePool struct {
-	Metadata Metadata     `json:"metadata"`
-	Spec     NodePoolSpec `json:"spec"`
+	Metadata Metadata       `json:"metadata"`
+	Spec     NodePoolSpec   `json:"spec"`
+	Status   NodePoolStatus `json:"status,omitempty"`
+}
+
+// NodePoolStatus is the upstream-reported fulfilment of a pool's bid. warden
+// never writes it; the price guard only reports it (VERIFIED live 2026-10-11:
+// {"bidStatus":"Fulfilled","wonCount":3}).
+type NodePoolStatus struct {
+	BidStatus string `json:"bidStatus,omitempty"`
+	WonCount  *int   `json:"wonCount,omitempty"`
 }
 
 type Metadata struct {
@@ -34,6 +43,13 @@ type Metadata struct {
 	// mismatched RV is rejected 409 and NOT applied — see
 	// docs/notes/invariant-policy.md "Concurrency".)
 	ResourceVersion string `json:"resourceVersion,omitempty"`
+	// UID and Generation identify the object and its spec revision. Kubernetes
+	// semantics: generation increments on every spec change and not on status
+	// updates (VERIFIED live 2026-10-11: an ngpc SpotNodePool carries both,
+	// e.g. generation 2 at resourceVersion 80980440). The price guard uses
+	// them to tell its own write from anyone else's.
+	UID        string `json:"uid,omitempty"`
+	Generation int64  `json:"generation,omitempty"`
 }
 
 type NodePoolSpec struct {
@@ -61,6 +77,15 @@ type ServerClass struct {
 	Spec     struct {
 		MinBidPricePerHour string `json:"minBidPricePerHour"`
 	} `json:"spec"`
+	// Status carries the live market. marketPricePerHour is the current
+	// clearing price (VERIFIED live 2026-10-11 on mh.vs1.large-iad:
+	// {"spotPricing":{"hammerPricePerHour":"0.005000","marketPricePerHour":"0.005000"}}).
+	Status struct {
+		SpotPricing struct {
+			MarketPricePerHour string `json:"marketPricePerHour"`
+			HammerPricePerHour string `json:"hammerPricePerHour"`
+		} `json:"spotPricing"`
+	} `json:"status"`
 }
 
 // UpperBound is the maximum number of nodes this pool can contribute to the
