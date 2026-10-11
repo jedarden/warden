@@ -154,7 +154,11 @@ See `docs/notes/security-model.md`.
       never fight a human, fail static and alert on anything unreadable.
       `internal/guard`, version `0.3.0`; dry-run first, then writes, then a
       live fire drill before any iad-ci cutover
-      (`docs/notes/spot-price-guard.md`).
+      (`docs/notes/spot-price-guard.md`). Status 2026-10-11: `0.3.0` built
+      (`warden-build-gfggr`, tag `v0.3.0`) and deployed through
+      declarative-config (`eaca9490` dry-run, `cbe36b39` rollout fix,
+      `c4d9f920` writes on); live in `waiting-for-pool` — the fire drill
+      runs once the user creates the pool.
 - [ ] Phase 4: Point a deterministic autoscaler (or the NEEDLE dispatcher) at
       warden; confirm scale-up / scale-to-zero end to end against a real pool.
 - [ ] Phase 5: Preemption-safety in the workers (release bead + clean worktree

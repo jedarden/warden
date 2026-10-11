@@ -32,7 +32,11 @@ cluster uses (see `armor`, `traefik-forward-auth`, etc. in declarative-config).
    `ch.vs1.large-ord` on the `agent-sandbox` cloudspace (us-central-ord-1),
    which `deployment.yaml`'s `WARDEN_ALLOWED_SERVER_CLASSES` now matches.
 2. ~~Build the image~~ — `ronaldraygun/warden:0.2.0` was built by
-   `warden-build-manual-6splp` and deployed on 2026-09-22.
+   `warden-build-manual-6splp` and deployed on 2026-09-22. Since 2026-10-11
+   builds are declarative: pushing a release tag `vX.Y.Z` on Forgejo fires
+   `warden-build-sensor` (iad-ci); `0.3.0` was built by `warden-build-gfggr`
+   from tag `v0.3.0` and deployed the same day (price guard, dry-run first,
+   then writes).
 3. ~~Populate the two not-yet-stored OpenBao paths~~ — done (caller-tokens
    verified 2026-08-23; docker pull credentials synced before first deploy).
    Values travel by pipe or `@file`, never argv:

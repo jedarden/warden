@@ -105,8 +105,8 @@ Persisted in ConfigMap `warden-spot-guard-state` (key `state.json`) in the
 `warden-spot-guard-state`: `get`/`update` on that name, `create` on
 configmaps). It is created by warden, not ArgoCD, and holds no credential.
 Every update carries the ConfigMap's `resourceVersion`, so a second instance
-fails static instead of overwriting; the Deployment uses `strategy: Recreate`
-so there is only ever one. The intent to write is persisted **before** each
+fails static instead of overwriting; the Deployment rolls with `maxSurge: 0`
+/ `maxUnavailable: 1`, so the old pod is stopped before the new one starts. The intent to write is persisted **before** each
 Spot write, and an unconfirmed write is reconciled on the next poll from the
 pool's `metadata.generation` (+1 = the guard's write landed; unchanged = it did
 not; anything else = someone else, release). Read it without writing:
@@ -125,6 +125,18 @@ kubectl --server=http://traefik-rs-manager:8001 -n warden logs deploy/warden | g
    (`"dryRun":true` → `"dryRun":false`).
 3. Run the fire drill below once the pool exists, **before** any iad-ci
    workload moves onto it.
+
+Done 2026-10-11 for steps 1–2: image `0.3.0` (`warden-build-gfggr`, tag
+`v0.3.0`, digest `sha256:e2d9b1c4…`); declarative-config `eaca9490` (dry-run),
+`cbe36b39` (rollout strategy fix — see the Deployment comment), `c4d9f920`
+(writes on). Dry-run logged `fail-static:waiting-for-pool` at market
+`0.005000` every poll, alerted once (ntfy id `uTw77kO4xbtK`), and created its
+state ConfigMap. Step 3 waits for the pool.
+
+New releases: bump `VERSION` in the commit that changes the code, push it,
+and push tag `vX.Y.Z` on that commit while it is still main's tip — the tag
+fires `warden-build-sensor` in iad-ci, which builds main's tip
+(`release-version.py` takes `VERSION` when the tip raised it).
 
 ## Fire drill (repeatable)
 

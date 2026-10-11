@@ -7,10 +7,17 @@ metadata:
     app: warden
 spec:
   replicas: 1
-  # Recreate, not RollingUpdate: the Spot price guard must never run as two
-  # instances at once (its state store would also refuse the second writer).
+  # Old pod down before the new one starts: the Spot price guard must never
+  # run as two instances (its state store would also refuse a second
+  # writer). Not `type: Recreate`: ArgoCD's server-side apply cannot drop the
+  # live object's defaulted rollingUpdate block, so the type change fails
+  # validation (seen 2026-10-11) — maxSurge 0 / maxUnavailable 1 is the same
+  # ordering for one replica.
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: warden
@@ -65,12 +72,15 @@ spec:
               # mh.vs1.large-iad pool, bid 0.015, off above 0.012/h, restore
               # after 30 min, max 2 nodes. The main org is NOT a caller target;
               # the guard's own permit covers only this pool and counts {0, 2}.
-              # dryRun:true = observe and alert, never write.
-              value: '{"account":"apexalgo","namespace":"org-kselolwaoxl3zxfm","refreshTokenEnv":"WARDEN_SPOT_REFRESH_TOKEN_APEXALGO","cloudSpace":"iad-ci","serverClass":"mh.vs1.large-iad","offAbovePerHour":"0.012","restoreAfter":"30m","restoreCount":2,"pollInterval":"60s","dryRun":true,"stateConfigMap":"warden-spot-guard-state"}'
+              # dryRun:false = writes enabled 2026-10-11 after the dry-run was verified
+              # live (waiting-for-pool, ntfy delivery); set true to observe only.
+              value: '{"account":"apexalgo","namespace":"org-kselolwaoxl3zxfm","refreshTokenEnv":"WARDEN_SPOT_REFRESH_TOKEN_APEXALGO","cloudSpace":"iad-ci","serverClass":"mh.vs1.large-iad","offAbovePerHour":"0.012","restoreAfter":"30m","restoreCount":2,"pollInterval":"60s","dryRun":false,"stateConfigMap":"warden-spot-guard-state"}'
           resources:
+            # 64Mi/128Mi: rs-manager rule, limit at most 2x request (was
+            # 32Mi/128Mi); the price guard adds one goroutine and small state.
             requests:
               cpu: 25m
-              memory: 32Mi
+              memory: 64Mi
             limits:
               cpu: 200m
               memory: 128Mi
