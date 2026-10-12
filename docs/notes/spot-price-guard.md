@@ -4,6 +4,10 @@
 off above `0.012`/h, auto-restore after 30 min, max 2 nodes. Bead
 `warden-faf60f86`.
 
+**Pool created 2026-10-12:** Spot's console minimum bid was `0.020`/h, so the
+user submitted the fixed two-node pool at `0.020`/h. The guard threshold remains
+`0.012`/h; it does not require the bid to equal the earlier `0.015` plan.
+
 warden runs an internal price guard for one pool in the **main** Spot
 organization (`org-kselolwaoxl3zxfm`, which also holds the production trading
 clusters): the single fixed pool in cloudspace `iad-ci` with server class
@@ -46,7 +50,7 @@ Known limits: a human who sets the pool to 0 while the guard already holds it
 at 0 makes a no-op write, which the API does not record (no generation bump),
 so the guard cannot see it. To keep the pool off after a guard off, change
 anything else in its spec (or scale to 1 and back to 0). The guard reacts to
-price, not to Spot preemption — a market above the bid (`0.015`) preempts the
+price, not to Spot preemption — a market above the bid (`0.020`) preempts the
 nodes regardless.
 
 ## Permission — narrower than the caller API
@@ -151,7 +155,7 @@ fires `warden-build-sensor` in iad-ci, which builds main's tip
 ## Fire drill (repeatable)
 
 Proves the defensive posture end to end on the real pool. Run only with writes
-enabled and the guard `tracking` the real pool (desired 2, bid `0.015`). All
+enabled and the guard `tracking` the real pool (desired 2, bid `0.020`). All
 cluster reads use the credential-free read-only proxies; the only changes are
 the two declarative-config commits below.
 
@@ -191,7 +195,7 @@ cd "$D/dc" && git revert --no-edit "$DRILL" && git show --stat HEAD && git pull 
 The revert must restore `"offAbovePerHour":"0.012"` and change nothing else.
 Expect: `condition=holding-off` with a growing `quiet_for`, **no** restore
 before 30 minutes, then `action=restore`, alert **RESTORED**, the pool at
-`desired 2`, Spot fulfils the `0.015` bid again (`bidStatus Fulfilled`,
+`desired 2`, Spot fulfils the `0.020` bid again (`bidStatus Fulfilled`,
 `wonCount 2`), and the pool's nodes rejoin iad-ci `Ready`.
 
 **3. Snapshot again** and diff against step 0: only the guarded pool's
