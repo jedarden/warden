@@ -56,10 +56,16 @@ func TestSetFixedDesiredRefusesWithoutPrecondition(t *testing.T) {
 
 func TestSetFixedDesiredErrorClasses(t *testing.T) {
 	for status, check := range map[int]func(error) bool{
-		http.StatusConflict:            IsConflict,
-		http.StatusUnprocessableEntity: IsPreconditionRejected,
+		http.StatusConflict:            func(err error) bool { return IsConflict(err) && !IsWriteRejected(err) },
+		http.StatusBadRequest:          func(err error) bool { return IsPreconditionRejected(err) && IsWriteRejected(err) },
+		http.StatusUnauthorized:        IsWriteRejected,
+		http.StatusForbidden:           IsWriteRejected,
+		http.StatusMethodNotAllowed:    IsWriteRejected,
+		http.StatusUnprocessableEntity: func(err error) bool { return IsPreconditionRejected(err) && IsWriteRejected(err) },
 		http.StatusNotFound:            func(err error) bool { return errors.Is(err, ErrNotFound) },
-		http.StatusInternalServerError: func(err error) bool { return err != nil && !IsConflict(err) && !IsPreconditionRejected(err) },
+		http.StatusInternalServerError: func(err error) bool {
+			return err != nil && !IsConflict(err) && !IsPreconditionRejected(err) && !IsWriteRejected(err)
+		},
 	} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(status) }))
 		c := NewClient(srv.URL, "http://auth", "client", "refresh", 5*time.Second)

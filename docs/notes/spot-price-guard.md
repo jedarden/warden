@@ -1,5 +1,20 @@
 # Spot price guard
 
+> **Live drill failed 2026-10-12; automatic price protection is unavailable.**
+> The `mh.vs1.large-iad` pool was at desired/won 2 and market `0.005`/h.
+> Declarative-config commit `60c2ec9c84f65a52958fd01ce70fdb67b3ae0ab4`
+> temporarily lowered the threshold to `0.004`/h. At 17:17:18Z Rackspace
+> rejected the guard's `PATCH spec.desired=0` with HTTP 403: `Desired validation
+> failed: the 'desired' field must be greater than 0, but got 0`. The guard
+> alerted FAIL-STATIC (`ntfy_id=4pkYc7aBrkCr`); the pool never turned off.
+> Commit `ac16981c1bc6eed1202eaa43a3f556126d445889` reverted the threshold.
+> ArgoCD is Synced/Healthy, the guard returned to `tracking` at `0.012`/h, and
+> a fresh provider snapshot confirms desired/won 2 at bid `0.020`/h. **Do not
+> repeat the drill or rely on this guard to enforce the price ceiling until a
+> provider-supported zero-capacity operation is established and tested.** The
+> old 2XL remains in service for ACB/TGP; do not retire it on the strength of
+> this guard. `warden-faf60f86` remains open.
+
 **User decision 2026-10-11:** iad-ci `mh.vs1.large-iad` pool, bid `0.015`, guard
 off above `0.012`/h, auto-restore after 30 min, max 2 nodes. Bead
 `warden-faf60f86`.
@@ -14,7 +29,7 @@ clusters): the single fixed pool in cloudspace `iad-ci` with server class
 `mh.vs1.large-iad`. The pool is created by a human in the Spot console; the
 guard never creates, deletes or re-shapes anything.
 
-## Behaviour
+## Intended behaviour (blocked by provider validation)
 
 Every poll (60 s) the guard reads `ServerClass/mh.vs1.large-iad`
 `status.spotPricing.marketPricePerHour` and lists the organization's pools.
@@ -130,6 +145,23 @@ kubectl --server=http://traefik-rs-manager:8001 -n warden get configmap warden-s
 kubectl --server=http://traefik-rs-manager:8001 -n warden logs deploy/warden | grep 'spot guard'
 ```
 
+An authenticated upstream refusal of an off or restore write is a permanent
+write block. Warden records `writeBlocked` in this state, alerts
+`fail-static:write-blocked` (protection unavailable), and continues read-only
+price and pool observations without another write. The block survives restarts
+and threshold changes. A rejected off leaves no restore claim; a rejected
+restore retains the guard's confirmed `owned` off. After the provider-supported
+operation and its permissions have been verified, an operator can clear only
+`writeBlocked` from the Warden-owned state ConfigMap and restart Warden through
+its GitOps release. Preserve `owned`; a blocked restore must not strand a pool
+by erasing its claim. A low-price observation re-arms a reset off guard before
+the next spike, and a reset restore starts a fresh 30-minute quiet interval.
+Do not reset the block to repeat the currently rejected zero-count PATCH.
+If the state store rejects the latch save, this process still refuses further
+writes and logs `restart durability unavailable`; a crash before a successful
+save can reload the earlier pending intent and retry. Restore state-store
+health before relying on the latch across restarts.
+
 ## Rollout
 
 1. Deploy with `"dryRun":true`. Confirm from the logs that each tick's
@@ -145,19 +177,25 @@ Done 2026-10-11 for steps 1–2: image `0.3.0` (`warden-build-gfggr`, tag
 `cbe36b39` (rollout strategy fix — see the Deployment comment), `c4d9f920`
 (writes on). Dry-run logged `fail-static:waiting-for-pool` at market
 `0.005000` every poll, alerted once (ntfy id `uTw77kO4xbtK`), and created its
-state ConfigMap. Step 3 waits for the pool.
+state ConfigMap. Step 3 was attempted after the pool was ready and failed as
+recorded above.
 
 New releases: bump `VERSION` in the commit that changes the code, push it,
 and push tag `vX.Y.Z` on that commit while it is still main's tip — the tag
 fires `warden-build-sensor` in iad-ci, which builds main's tip
 (`release-version.py` takes `VERSION` when the tip raised it).
 
-## Fire drill (repeatable)
+## Fire drill (historical procedure; blocked)
 
-Proves the defensive posture end to end on the real pool. Run only with writes
-enabled and the guard `tracking` the real pool (desired 2, bid `0.020`). All
-cluster reads use the credential-free read-only proxies; the only changes are
-the two declarative-config commits below.
+**Blocked:** the 2026-10-12 live attempt above proved `desired=0` is rejected
+for this pool. Do not rerun until Rackspace confirms a supported off operation
+and the guard implements it. The steps below record the original acceptance
+test, not an executable procedure under the current API behavior.
+
+The procedure was intended to prove the defensive posture end to end on the
+real pool. It assumed writes were enabled and the guard was `tracking` the real
+pool (desired 2, bid `0.020`). Cluster reads use the credential-free read-only
+proxies; the only planned changes were the two declarative-config commits below.
 
 Work in a disposable clone of declarative-config (never the shared checkout):
 

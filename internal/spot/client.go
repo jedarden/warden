@@ -34,6 +34,13 @@ var ErrConflict = errors.New("conflict")
 // whose bid changed after the snapshot used for the policy decision.
 var ErrPreconditionRejected = errors.New("precondition rejected")
 
+// ErrWriteRejected means the upstream definitively refused the fixed-pool
+// write for authorization, admission, or an unsupported request shape. Retrying
+// the same request cannot establish that the price guard can protect the pool.
+var ErrWriteRejected = errors.New("write rejected")
+
+func IsWriteRejected(err error) bool { return errors.Is(err, ErrWriteRejected) }
+
 // IsConflict reports whether err came from a lost optimistic-concurrency race.
 func IsConflict(err error) bool { return errors.Is(err, ErrConflict) }
 
@@ -282,7 +289,9 @@ func (c *Client) SetFixedDesired(ctx context.Context, ns, name string, count int
 	case status == http.StatusConflict:
 		return nil, fmt.Errorf("patch spotnodepool: %w: status %d: %s", ErrConflict, status, truncate(rb))
 	case status == http.StatusBadRequest || status == http.StatusUnprocessableEntity:
-		return nil, fmt.Errorf("patch spotnodepool: %w: status %d: %s", ErrPreconditionRejected, status, truncate(rb))
+		return nil, fmt.Errorf("patch spotnodepool: %w: %w: status %d: %s", ErrWriteRejected, ErrPreconditionRejected, status, truncate(rb))
+	case status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusMethodNotAllowed:
+		return nil, fmt.Errorf("patch spotnodepool: %w: status %d: %s", ErrWriteRejected, status, truncate(rb))
 	case status == http.StatusNotFound:
 		return nil, ErrNotFound
 	case status < 200 || status >= 300:

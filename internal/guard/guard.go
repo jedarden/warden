@@ -56,6 +56,7 @@ const (
 	CondStateUnreadable = "fail-static:state-unreadable"
 	CondStateUnwritable = "fail-static:state-unwritable"
 	CondWriteFailed     = "fail-static:write-failed"
+	CondWriteBlocked    = "fail-static:write-blocked"
 )
 
 // Actions reported in Result.
@@ -161,6 +162,22 @@ func (g *Guard) tick(ctx context.Context) Result {
 
 	price, priceText, perr := g.readPrice(ctx)
 	res := Result{Price: priceText}
+	if st.WriteBlocked != nil {
+		// Monitor without letting price, identity or spec changes re-arm writes.
+		// An existing confirmed off remains owned until an operator resets the
+		// latch; clearing ownership here could strand that pool at zero.
+		res.Pool = st.WriteBlocked.Pool
+		detail := "protection unavailable; writes blocked until explicit operator reset: " + st.WriteBlocked.Reason
+		if perr != nil {
+			detail += "; price monitoring failed: " + perr.Error()
+		}
+		if _, err := g.spot.ListNodePools(ctx, g.cfg.Namespace); err != nil {
+			detail += "; pool monitoring failed: " + err.Error()
+		}
+		// No restore continuity can be inferred through a blocked interval.
+		st.QuietSince, st.LastPriceAt = nil, nil
+		return g.failStatic(ctx, CondWriteBlocked, detail, res, true)
+	}
 	if perr != nil {
 		// Continuity of "at or below" cannot be proven across an unreadable
 		// price: the restore timer starts over.
@@ -294,6 +311,11 @@ func (g *Guard) turnOff(ctx context.Context, now time.Time, pools []spot.NodePoo
 		res.Condition = g.lastCondition
 		g.save(ctx)
 		return res
+	case spot.IsWriteRejected(err):
+		// An explicit refusal is not an uncertain off and confers no restore
+		// ownership. Persist the block instead of re-deciding every tick.
+		st.Owned = nil
+		return g.blockWrites(ctx, p.Metadata.Name, "off write rejected: "+err.Error(), res)
 	case definitive(err):
 		st.Owned, st.Armed = nil, true
 		res.Action = ActWriteAborted
@@ -420,6 +442,10 @@ func (g *Guard) restore(ctx context.Context, pools []spot.NodePool, p spot.NodeP
 		res.Action, res.Detail, res.Condition = ActRestPending, "restore write accepted but not confirmed; reconciling next tick", g.lastCondition
 		g.save(ctx)
 		return res
+	case spot.IsWriteRejected(err):
+		// The off remains ours; only the rejected restore intent is dropped.
+		o.Phase = PhaseOff
+		return g.blockWrites(ctx, o.Pool, "restore write rejected: "+err.Error(), res)
 	case definitive(err):
 		o.Phase = PhaseOff
 		res.Action = ActWriteAborted
@@ -537,6 +563,21 @@ func (g *Guard) failStatic(ctx context.Context, cond, detail string, res Result,
 	return res
 }
 
+func (g *Guard) blockWrites(ctx context.Context, pool, reason string, res Result) Result {
+	g.state.WriteBlocked = &WriteBlock{Pool: pool, Reason: reason, At: g.now().UTC()}
+	g.state.Armed = false
+	g.state.QuietSince, g.state.LastPriceAt = nil, nil
+	// Persist before alert delivery, which can time out and exhaust the tick's
+	// context. A paging failure must not lose the rejected-write latch.
+	g.state.Condition = CondWriteBlocked
+	detail := "protection unavailable; writes blocked until explicit operator reset: " + reason
+	if err := g.persist(ctx); err != nil {
+		detail += "; cannot persist write block (restart durability unavailable): " + err.Error()
+	}
+	res.Action = ActWriteAborted
+	return g.failStatic(ctx, CondWriteBlocked, detail, res, false)
+}
+
 // transition alerts only when the condition changes.
 func (g *Guard) transition(ctx context.Context, cond string, a Alert) {
 	if cond == g.lastCondition {
@@ -592,8 +633,12 @@ func (g *Guard) persist(ctx context.Context) error {
 	g.state.UpdatedAt = g.now().UTC()
 	err := g.store.Save(ctx, g.state)
 	if errors.Is(err, ErrStateConflict) {
-		// Someone else wrote the state: reload before acting again.
-		g.state = nil
+		// Someone else wrote the state: reload before acting again, except that
+		// a known upstream rejection must keep this process blocked even if the
+		// latch could not be saved. An operator reset requires a restart.
+		if g.state.WriteBlocked == nil {
+			g.state = nil
+		}
 	}
 	return err
 }

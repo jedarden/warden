@@ -41,6 +41,11 @@ type State struct {
 	// Owned is non-nil only while a guard-initiated off is outstanding. It is
 	// the guard's sole claim to restore anything.
 	Owned *Owned `json:"owned,omitempty"`
+	// WriteBlocked is a durable latch after an upstream rejection. Price changes,
+	// pool changes and restarts never reset it. An operator must clear only this
+	// field in the stored state and restart the guard after resolving the cause;
+	// Owned must be preserved so a legitimate off can still be restored.
+	WriteBlocked *WriteBlock `json:"writeBlocked,omitempty"`
 	// QuietSince is the first observation of the current continuous
 	// at-or-below-threshold streak while Owned. Any spike, unreadable price,
 	// or observation gap clears it.
@@ -56,6 +61,12 @@ type State struct {
 	// Condition is the last alerted status; alerts fire when it changes.
 	Condition string    `json:"condition,omitempty"`
 	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type WriteBlock struct {
+	Pool   string    `json:"pool"`
+	Reason string    `json:"reason"`
+	At     time.Time `json:"at"`
 }
 
 // Owned records the pool the guard turned off and exactly what it looked
