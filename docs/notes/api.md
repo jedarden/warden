@@ -1,10 +1,13 @@
 # Intent API — error contract
 
 The status codes and response bodies callers (NEEDLE workers, the future
-autoscaler) should program against. Endpoint list and scale semantics live in
-the README; the enforcement reasons behind the 403s live in
+autoscaler) should program against. Consumers normally program against them
+through `internal/intent` / `cmd/wardenctl`, which maps this table to
+sentinel errors. Endpoint list and scale semantics live in the README; the
+enforcement reasons behind the 403s live in
 [`invariant-policy.md`](invariant-policy.md); the auth model lives in
-[`security-model.md`](security-model.md).
+[`security-model.md`](security-model.md); handing a caller token to a
+consumer lives in [`consumer-integration.md`](consumer-integration.md).
 
 ## Two response shapes
 

@@ -53,4 +53,14 @@ cluster uses (see `armor`, `traefik-forward-auth`, etc. in declarative-config).
    the configured cap of 10.
 
 Remaining: hand the caller token to the autoscaler/dispatcher out-of-band (its
-own secret) and point it at warden — a separate, deliberate step.
+own secret) and point it at warden — a separate, deliberate step. The
+consumer-side half now exists: the executable reference consumer
+(`cmd/wardenctl`, embedding `internal/intent`) and the full handoff runbook
+([`docs/notes/consumer-integration.md`](../docs/notes/consumer-integration.md))
+— rollout, rotation, revocation, rollback, and the bounded scale/restore
+exercise. `wardenctl unauth-check` verified live against this deployment
+(401 as expected, 2026-11-08). What is still pending, deliberately, is the
+consumer owner itself: per the human decision on bead `warden-1d182474`
+(2026-10-03) a concrete consumer (with its demand signal and capacity
+algorithm) must be selected before any per-consumer token is staged — no
+credential exists in a consumer store yet.

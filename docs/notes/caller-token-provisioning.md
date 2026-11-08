@@ -16,7 +16,10 @@ ExternalSecret `warden-caller-tokens` in namespace `warden` reports
 `GET /v1/pools` unauthenticated → 401 (auth middleware live), and the audit
 log carries 12-hex-char caller fingerprints with no token-length hex anywhere
 in the pod logs. A token has not yet been handed to any consumer — the
-autoscaler/dispatcher handoff is still pending (`deploy/README.md`).
+consumer-side integration (client code, secret reference, rollout) now exists
+as [`consumer-integration.md`](consumer-integration.md) with the executable
+reference consumer `cmd/wardenctl`; the handoff itself is still pending a
+selected consumer owner (`deploy/README.md`).
 
 ## What a caller token is — and its blast radius
 

@@ -78,6 +78,11 @@ permission, state, rollout, and the repeatable fire drill).
 | `POST` | `/v1/pools/{name}/scale` | Set node count on an existing pool: `{"count": N}` |
 
 All `/v1` calls require a caller bearer token (`Authorization: Bearer <token>`).
+Consumers don't build that by hand: `internal/intent` is the client package an
+autoscaler or dispatcher embeds (one token, by reference; window-guarded
+scale; auth-boundary check), `cmd/wardenctl` the reference CLI. Handing a
+token to a consumer — secret reference, rollout, rotation, revocation,
+rollback — is [`docs/notes/consumer-integration.md`](docs/notes/consumer-integration.md).
 
 **Error contract:** decisions come back as JSON with an `allowed` boolean;
 transport/validation failures are plain text. Per-endpoint status codes,
@@ -134,9 +139,11 @@ credential wiring and rotation are in
 ## Structure
 
 - `cmd/warden/` — entrypoint
+- `cmd/wardenctl/` — reference consumer CLI for the intent API (the caller side of the token handoff)
 - `internal/policy/` — the enforcement core (pure, exhaustively tested)
 - `internal/guard/` — the Spot price guard: state machine, narrow write permit, ConfigMap state store, ntfy alerts
 - `internal/spot/` — Rackspace Spot API client + OAuth token manager
+- `internal/intent/` — consumer-side client for warden's own API: bearer-token presentation, error contract, window-guarded scale
 - `internal/server/` — the intent API + caller auth + audit
 - `deploy/` — manifests for the rs-manager deployment, **live since 2026-07-30** (image `ronaldraygun/warden:0.3.0` since 2026-10-11, reachable at `warden-rs-manager.ardenone.com:8444` over the tailnet). Source of truth is `declarative-config` at `k8s/rs-manager/warden/`, synced by ArgoCD Application `warden-ns-rs-manager`; this copy is a staging mirror — never applied with `kubectl` directly
 - `docs/notes/` — security model, invariant policy, API error contract, configuration reference

@@ -179,6 +179,15 @@ See `docs/notes/security-model.md`.
       read as a change (one follow-up alert, no re-scale).
 - [ ] Phase 4: Point a deterministic autoscaler (or the NEEDLE dispatcher) at
       warden; confirm scale-up / scale-to-zero end to end against a real pool.
+      Client half landed 2026-11-08 (bead `warden-1d182474`): `internal/intent`
+      (caller-token client, window-guarded scale, auth-boundary check) and the
+      reference consumer `cmd/wardenctl`, plus the handoff runbook
+      (`docs/notes/consumer-integration.md`); `wardenctl unauth-check` verified
+      live (401). Remaining: select the consumer owner (demand signal,
+      deterministic capacity algorithm, pool ownership, scale-to-zero safety —
+      human decision 2026-10-03 on the bead), deploy it through declarative-config,
+      stage its distinct per-consumer token, and run the bounded live
+      scale/restore exercise.
 - [ ] Phase 5: Preemption-safety in the workers (release bead + clean worktree
       on node loss) — prerequisite for leaning on floor-bid Spot.
 - [ ] Phase 6 (absorption): expose the intent API as a SEAM route; move the token
