@@ -8,9 +8,9 @@ trivially bypassed by adding a second pool.
 
 | Invariant | Default | Enforced how |
 |-----------|---------|--------------|
-| Max total nodes (org ceiling) | `10` | `count + Σ UpperBound(other pools) ≤ max` |
-| Allowed server classes | `gp.vs1.medium-iad` | target pool's `serverClass` must be in the set |
-| Bid cap | `0.01` | refuse to grow a pool whose `bidPrice > cap` |
+| Max total nodes (org ceiling) | `10` | growth must keep `count + Σ UpperBound(other pools) ≤ max`; an already-over-cap org permits only strict target reductions |
+| Allowed server classes | `gp.vs1.medium-iad` | growth requires the target pool's `serverClass` to be in the set; an existing out-of-set pool permits only strict reduction |
+| Bid cap | `0.01` | growth requires `bidPrice ≤ cap`; an existing over-cap or unparseable bid permits only strict reduction |
 | Node count | `≥ 0` | negative denied |
 | Autoscaling window | — | autoscaled target: `count ≥ autoscaling.minNodes` |
 
@@ -42,6 +42,44 @@ caller can stay inside the window without probing for the 403.
 Scale-to-zero on an autoscaled pool therefore requires
 `minNodes = 0` and means `maxNodes = 0`: the autoscaler may not add nodes (the
 pool is paused), not that anything is deleted.
+
+## Out-of-policy existing pools — strict monotonic remediation
+
+This is the exception to the ordinary envelope checks (decided 2026-10-03,
+bead `warden-5219c29f`). Warden cannot create/delete a pool or change its class,
+bid, or autoscaling floor; for an existing pool already outside the class
+allowlist, carrying an over-cap or unparseable configured bid, or belonging to
+an organization whose current summed upper bounds exceed the ceiling, the only
+safe operation it can express is winding that target down.
+
+The rule is strict and compares the requested count with the target's current
+`UpperBound`:
+
+| Requested count | Decision | Result |
+|---|---|---|
+| `count < UpperBound` | allow | strict remediation; patch only the fixed `desired` or autoscaled `maxNodes` count, with the snapshot `resourceVersion` |
+| `count == UpperBound` | deny | no-op is not remediation; no patch is sent |
+| `count > UpperBound` | deny | growth cannot deepen or preserve the drift; no patch is sent |
+
+Scale-to-zero is therefore allowed for a fixed out-of-policy pool when its
+current bound is positive. It is allowed for an autoscaled pool only when
+`minNodes = 0`; a nonzero floor still denies zero or any count below that floor.
+An org reduction may remain above the ceiling — it is still allowed because the
+target bound strictly fell. The caller receives `200` with an allow reason of
+the form `strict out-of-policy reduction permitted: <drift>; org ceiling
+<requested-total>/<cap>`. A no-op receives `403` with `out-of-policy pool
+requires a strict reduction`, and growth receives `403` with either
+`refusing to grow out-of-policy pool` (class/bid drift) or the ordinary
+`request would bring org node ceiling...` reason. Every allowed request still
+uses a count-only merge patch and the resource-version precondition; denials
+send zero patches.
+
+This monotonic exception does not relax interpretation or ownership rules:
+malformed node-count state, a count below `minNodes`, a missing bid, a failed
+server-class lookup, and the separate `GrandfatheredBid` rule for a valid bid
+below the current new-bid minimum remain denied in every direction. An
+unparseable non-empty configured bid is handled by this strict-reduction rule:
+shrink is allowed, while hold and growth are denied.
 
 ## Concurrency — the ceiling cannot be raced (decided 2026-09-16, bead `warden-d76280fb`)
 
@@ -112,9 +150,11 @@ Both layers are deployed in `warden:0.2.0` as of 2026-09-22. The rollout used
 `warden-ns-rs-manager` was Synced and Healthy, the pod reported Ready on the
 published image digest, and authenticated list plus policy-denial checks passed.
 
-Any input warden cannot fully evaluate is denied:
+Other input handling remains fail-closed:
 
-- Unparseable `bidPrice` on the target pool ⇒ deny.
+- An unparseable non-empty `bidPrice` on the target pool ⇒ strict reduction
+  only; hold and growth deny. A missing bid remains fail-closed before the
+  envelope decision.
 - Pool not found ⇒ deny (404).
 - Unknown route / method ⇒ 404 (no default-allow).
 - A pool-list body that fails to decode (e.g. a count field that is not an

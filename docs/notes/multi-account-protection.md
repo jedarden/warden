@@ -62,8 +62,10 @@ Before **every** scale decision, Warden reads the target pool and its
 for a **new bid**, not the live market clearing price. If the pool's existing
 `spec.bidPrice` is lower, Warden rejects **all** scale requests for that pool,
 including no-op, growth, shrink, and zero. The pool and its old bid remain
-untouched through Warden. Missing or invalid prices and failed class reads
-also block the write.
+untouched through Warden. A missing price and failed class read also block the
+write. A non-empty unparseable price is different: it is existing envelope
+drift, so only a strict reduction below the target's current bound may wind
+the pool down; a hold or growth is denied.
 
 An allowed scale carries the pool's `metadata.resourceVersion` as an upstream
 write precondition. If the revision is missing, changes concurrently, or the

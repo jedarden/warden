@@ -68,15 +68,18 @@ func TestDenyOverCapAcrossPools(t *testing.T) {
 
 func TestDenyDisallowedClass(t *testing.T) {
 	target := fixedPool("workers", "gp.vs1.large-iad", 1, "0.001")
-	if d := cfg().EvaluateScale(target, 1, []spot.NodePool{target}); d.Allow {
-		t.Fatal("expected deny for disallowed class")
+	// A growth: the class gate refuses to raise a pool's bound. A strict
+	// reduction is the only exception — see shrink_semantics_test.go.
+	if d := cfg().EvaluateScale(target, 2, []spot.NodePool{target}); d.Allow {
+		t.Fatal("expected deny for growing a disallowed-class pool")
 	}
 }
 
 func TestDenyBidOverCap(t *testing.T) {
 	target := fixedPool("workers", "gp.vs1.medium-iad", 1, "0.005")
-	if d := cfg().EvaluateScale(target, 1, []spot.NodePool{target}); d.Allow {
-		t.Fatal("expected deny for bid over cap")
+	// Growth probe: the bid gate refuses to raise an over-cap-bid pool.
+	if d := cfg().EvaluateScale(target, 2, []spot.NodePool{target}); d.Allow {
+		t.Fatal("expected deny for growing a pool with bid over cap")
 	}
 }
 
@@ -280,9 +283,9 @@ func TestEvaluateScaleInvariantMatrix(t *testing.T) {
 			reasonPart: "scale \"workers\"",
 		},
 		{
-			name:       "class outside allowlist is denied",
+			name:       "growing a class-outside-allowlist pool is denied",
 			target:     fixedPool("workers", "gp.vs1.large-iad", 1, "0.001"),
-			count:      1,
+			count:      2,
 			wantAllow:  false,
 			reasonPart: "not in the allowlist",
 		},
@@ -308,16 +311,16 @@ func TestEvaluateScaleInvariantMatrix(t *testing.T) {
 			reasonPart: "scale \"workers\"",
 		},
 		{
-			name:       "bid above cap is denied",
+			name:       "growing a pool with bid above cap is denied",
 			target:     fixedPool("workers", class, 1, "0.001001"),
-			count:      1,
+			count:      2,
 			wantAllow:  false,
 			reasonPart: "exceeds cap",
 		},
 		{
-			name:       "unparseable bid is denied fail closed",
+			name:       "growing a pool with unparseable bid is denied fail closed",
 			target:     fixedPool("workers", class, 1, "not-a-price"),
-			count:      1,
+			count:      2,
 			wantAllow:  false,
 			reasonPart: "cannot parse pool bidPrice",
 		},

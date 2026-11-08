@@ -17,7 +17,9 @@ func TestGrandfatheredBid(t *testing.T) {
 		{"above floor", "0.02", "0.01", true},
 		{"exact decimal comparison", "0.009999999999999999", "0.01", false},
 		{"missing bid", "", "0.01", false},
-		{"invalid bid", "NaN", "0.01", false},
+		// An unparseable configured bid is evaluated by EvaluateScale: strict
+		// reductions can wind it down, while growth still fails closed there.
+		{"invalid bid is passed to envelope policy", "NaN", "0.01", true},
 		{"missing minimum", "0.01", "", false},
 		{"invalid minimum", "0.01", "NaN", false},
 	} {

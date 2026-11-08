@@ -52,8 +52,11 @@ permission, state, rollout, and the repeatable fire drill).
 
 - **Max total nodes** across the whole org (default **10**) — a true ceiling
   that counts each pool's autoscaling max, not just its current size.
-- **Allowed server classes** only (default `gp.vs1.medium-iad`).
-- **Bid cap** (default `0.01`) — warden refuses to grow a pool bidding above it.
+- **Allowed server classes** only (default `gp.vs1.medium-iad`) — an existing
+  pool outside the allowlist may only be strictly reduced.
+- **Bid cap** (default `0.01`) — warden refuses to grow a pool bidding above it;
+  an existing over-cap or unparseable configured bid may only be strictly
+  reduced.
 - **Fail closed on malformed pool state** — a pool with missing/negative
   `desired`, negative autoscaling bounds, or `maxNodes < minNodes` (in any pool
   of the org) blocks every scale until repaired out-of-band: an
@@ -99,6 +102,14 @@ lower the floor out-of-band first. That floor is visible to callers as
 `lowerBound` on `GET /v1/pools` (0 on a fixed pool), paired with `upperBound`
 — the count window the scale endpoint accepts. Scale-to-zero on an autoscaled
 pool (`minNodes: 0`) sets `maxNodes: 0` — the pool is paused, not deleted.
+For an existing pool already outside the class/bid envelope, or an organization
+already above its ceiling, only a strict reduction below the pool's current
+`upperBound` is allowed, including scale-to-zero when the floor permits it.
+An equal-count hold is denied as non-remediating; growth remains denied. The
+allowed response says `strict out-of-policy reduction permitted` and carries a
+count-only, resource-version-guarded patch. See
+[`docs/notes/invariant-policy.md`](docs/notes/invariant-policy.md),
+"Out-of-policy existing pools".
 
 ## Configuration
 

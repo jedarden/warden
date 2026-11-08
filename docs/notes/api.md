@@ -95,10 +95,11 @@ only discriminator:
 |--------|------------------|
 | Negative count | `count must be >= 0, got %d` |
 | Below autoscaling floor | `count %d is below autoscaling minNodes %d; warden sets maxNodes only and will not lower minNodes` |
-| Class not allowlisted | `server class %q is not in the allowlist` |
-| Unparseable bid (fail closed) | `cannot parse pool bidPrice %q (fail closed)` |
-| Bid above cap | `pool bidPrice %.6f exceeds cap %.6f` |
-| Org ceiling exceeded | `request would bring org node ceiling to %d, exceeding cap of %d` |
+| Class not allowlisted on a growth | `refusing to grow out-of-policy pool: server class %q is not in the allowlist` |
+| Unparseable bid on a growth | `refusing to grow out-of-policy pool: cannot parse pool bidPrice %q (fail closed)` |
+| Bid above cap on a growth | `refusing to grow out-of-policy pool: pool bidPrice %.6f exceeds cap %.6f` |
+| Org ceiling exceeded by a growth | `request would bring org node ceiling to %d, exceeding cap of %d` |
+| Existing class/bid/org drift on a hold | `out-of-policy pool requires a strict reduction: requested count %d is not below current bound %d (<drift>)` |
 | Malformed target pool state (fail closed) | `target pool state is malformed: <detail> (fix the pool out-of-band; warden will not act on state it cannot interpret)` — `<detail>` is one of: `fixed pool has no desired count`, `desired count %d is negative`, `autoscaling minNodes %d is negative`, `autoscaling maxNodes %d is negative`, `autoscaling maxNodes %d is below minNodes %d` |
 | Malformed bystander pool (fail closed) | `org snapshot has malformed pool state: pool %q: <detail> (fail closed)` — same `<detail>` set, but the named pool is *not* the one being scaled; every scale in the org is denied until it is fixed |
 
@@ -121,6 +122,28 @@ interpolated. Callers should still branch on the status (`403`) and
 `allowed:false`, then retain the full reason for diagnosis. Unknown pool is
 deliberately *not* folded into the 403: it is a `404` (the request never
 reached a policy decision about a real pool).
+
+### Existing non-compliant pools: direction, reason, and patch
+
+For an existing target with a disallowed class, an over-cap or unparseable
+configured bid, or an organization already above its summed upper-bound
+ceiling, policy is monotonic remediation rather than an unconditional ban:
+
+| Request | Response | Upstream effect |
+|---|---|---|
+| `count < current UpperBound` (including fixed scale-to-zero) | `200`; reason contains `strict out-of-policy reduction permitted` and the drift/current requested org total | exactly one count-only patch, carrying the listed pool's `metadata.resourceVersion` |
+| `count < current maxNodes` on autoscaled pool with `minNodes = 0` | `200`; same strict-remediation reason | exactly one patch of `spec.autoscaling.maxNodes`; `desired`, `minNodes`, class, and bid are untouched |
+| `count == current UpperBound` | `403`; reason contains `out-of-policy pool requires a strict reduction` | zero patches — an equal-count hold remediates nothing |
+| `count > current UpperBound` | `403`; growth names class/bid drift or the org-ceiling reason | zero patches |
+
+An autoscaled count below its current `minNodes` remains a 403 even when the
+pool is otherwise out of policy; scale-to-zero requires `minNodes = 0`. A
+reduction is allowed even if other pools leave the resulting org total above
+the configured ceiling: the target bound still fell strictly. This exception
+does not apply to malformed node-count state, missing bids, failed class reads,
+or a valid bid below the current server-class new-bid minimum; those are
+denied in every direction. A non-empty unparseable bid is the exception within
+bid parsing: strict reduction may wind it down, but hold and growth deny.
 
 ### Malformed-state API and audit contract
 
@@ -179,7 +202,7 @@ leaves one audit entry per re-decision.
 |--------|--------|
 | `400` | No — fix the body |
 | `401` | No — credentials are wrong; re-provision out-of-band |
-| `403` | Not as-is — lower `count` or fix the pool out-of-band (class/bid/minNodes); `lowerBound` on the pool list shows the floor a below-minNodes denial wants, and the ceiling denial may pass later if other pools shrink. A `malformed` reason needs the named pool repaired out-of-band first — no `count` passes while it is broken, and warden itself does not retry (one audited deny, zero patches) |
+| `403` | Not as-is — for an existing class/bid/org violation, request a strictly lower `count` (including zero when the floor permits it); an equal-count hold is denied. Fix the pool out-of-band when the reason names malformed state, a missing bid, a below-floor count, or a grandfathered bid. `lowerBound` on the pool list shows the autoscaling floor. Warden does not retry a policy deny (one audited deny, zero patches) |
 | `404` | No — the pool does not exist; pools are created out-of-band (console/Terraform), never through warden |
 | `409` | Yes — later; warden already retried internally (`maxScaleAttempts = 4`, a compile-time constant, not configurable) and failed closed |
 | `502` | Yes — later; upstream Spot was unavailable or timed out |

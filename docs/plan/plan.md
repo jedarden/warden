@@ -97,18 +97,34 @@ For a request to scale pool `P` to `count`:
 
 1. The account/org pair is explicitly configured and scaling is enabled for
    that target. Multi-target configuration defaults to read-only.
-2. `P.bidPrice >= P.serverClass.minBidPricePerHour`; missing or invalid prices
-   or a failed class read deny every write, including no-op and shrink.
+2. `P.bidPrice >= P.serverClass.minBidPricePerHour`; a valid bid below the
+   current new-bid minimum is grandfathered and denies every write. A missing
+   bid, or a failed class read, also denies every write. A non-empty
+   unparseable bid is handled as existing policy drift: only a strict target
+   reduction may proceed.
 3. `count >= 0`.
-4. `P.serverClass ∈ allowlist` (legacy default `{gp.vs1.medium-iad}`).
-5. `P.bidPrice <= maxBid` (legacy default `0.01`); unparseable bid ⇒ deny.
-6. `count + Σ UpperBound(other pools) <= maxTotalNodes` (legacy default `10`).
+4. `P.serverClass ∈ allowlist` (legacy default `{gp.vs1.medium-iad}`) for
+   growth; an existing disallowed-class pool may only be strictly reduced.
+5. `P.bidPrice <= maxBid` (legacy default `0.01`) for growth; an existing
+   over-cap or unparseable bid may only be strictly reduced.
+6. `count + Σ UpperBound(other pools) <= maxTotalNodes` (legacy default `10`)
+   for growth; when the current org sum already exceeds the ceiling, only a
+   strict reduction of the target bound may proceed.
 7. Autoscaled target: `count >= P.autoscaling.minNodes` — warden patches
    `autoscaling.maxNodes` only (never `desired`, never `minNodes`), so a lower
    count would invert the window and is denied (see
    `docs/notes/invariant-policy.md`, "Scale semantics").
 8. The write carries the pool's `resourceVersion`; missing or rejected
    preconditions deny the write, and conflicts trigger a fresh policy decision.
+
+For an existing class/bid/org-ceiling violation, "strict reduction" means
+`count < target.UpperBound()`. Equal-count holds are denied because they do not
+remediate the violation; growth is denied. A permitted reduction may still
+leave the org above its ceiling, but it always patches only the fixed
+`desired` or autoscaled `maxNodes` count with the snapshot resourceVersion.
+Malformed node-count state, a count below `minNodes`, and the grandfathered
+valid-below-floor bid rule remain denied in every direction. See
+`docs/notes/invariant-policy.md`, "Out-of-policy existing pools".
 
 Impossible by construction (no endpoint / field): create pool, delete pool,
 create/delete cloudspace, change server class, change bid.

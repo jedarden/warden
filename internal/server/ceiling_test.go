@@ -67,6 +67,7 @@ type fakePatchRecord struct {
 	carriesRV bool
 	rv        string
 	status    int
+	patch     map[string]any
 }
 
 type fakeSpot struct {
@@ -160,7 +161,7 @@ func (f *fakeSpot) patchHandler(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	rec := fakePatchRecord{pool: name, count: count, carriesRV: meta != nil, rv: rv}
+	rec := fakePatchRecord{pool: name, count: count, carriesRV: meta != nil, rv: rv, patch: patch}
 	f.patches = append(f.patches, rec)
 	last := &f.patches[len(f.patches)-1]
 
