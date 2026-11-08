@@ -46,6 +46,11 @@ type fakePoolState struct {
 	minNodes    int
 	maxNodes    int
 	rv          int // -1 = upstream exposes no resourceVersion; 0 is the default revision
+
+	// invalidDesiredJSON emits spec.desired as a non-integer string: the
+	// pool list itself then fails to decode (wire-invalid, one layer before
+	// policy's malformed-state rule).
+	invalidDesiredJSON bool
 }
 
 func (p *fakePoolState) upper() int {
@@ -119,6 +124,8 @@ func (f *fakeSpot) listHandler(w http.ResponseWriter, _ *http.Request) {
 		spec := map[string]any{"serverClass": serverClass, "bidPrice": bidPrice}
 		if p.autoscaled {
 			spec["autoscaling"] = map[string]any{"enabled": true, "minNodes": p.minNodes, "maxNodes": p.maxNodes}
+		} else if p.invalidDesiredJSON {
+			spec["desired"] = "three"
 		} else if !p.noDesired {
 			spec["desired"] = p.desired
 		}

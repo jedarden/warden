@@ -117,6 +117,9 @@ Any input warden cannot fully evaluate is denied:
 - Unparseable `bidPrice` on the target pool ⇒ deny.
 - Pool not found ⇒ deny (404).
 - Unknown route / method ⇒ 404 (no default-allow).
+- A pool-list body that fails to decode (e.g. a count field that is not an
+  integer) ⇒ 502, no policy decision reached — see "Malformed upstream
+  state".
 
 ## Malformed upstream state — fail closed (decided 2026-09-17, bead `warden-3694ee8d`)
 
@@ -137,6 +140,43 @@ scale):
 | autoscaled pool with `minNodes` < 0 | the window is not interpretable state |
 | autoscaled pool with `maxNodes` < 0 | `UpperBound` subtracts |
 | autoscaled pool with `maxNodes` < `minNodes` | the autoscaler holds the pool at ≥ `minNodes`, so `maxNodes` under-counts a floor already above the "ceiling" |
+
+### Decision matrix
+
+Every row is a **deny** — the intent API has no hold or pending outcome;
+each scale decision is a synchronous allow-or-deny. The five
+`CountBoundError` conditions resolve identically at the server layer (see
+"Resolution" below for the shared status, audit, and retry semantics); the
+`reason` detail is the differentiator. The reason's outer form depends only
+on *which* pool is broken: `target pool state is malformed: <detail> (fix
+the pool out-of-band; warden will not act on state it cannot interpret)`
+when it is the pool being scaled, else `org snapshot has malformed pool
+state: pool "<name>": <detail> (fail closed)`. The last row is the
+wire-invalid sibling — a count field that cannot decode at all never
+reaches policy and fails closed one layer earlier, with different
+semantics.
+
+| Input condition (upstream wire state) | Pool kind | Decision | HTTP | Canonical `<detail>` | Audit | Retry |
+|---|---|---|---|---|---|---|
+| `spec.desired` absent or `null` | fixed | deny | `403` JSON | `fixed pool has no desired count` | 1 entry, `allowed=false` | none automatic; repair out-of-band, then re-request |
+| `spec.desired` < 0 | fixed | deny | `403` JSON | `desired count %d is negative` | 1 entry, `allowed=false` | none automatic; repair out-of-band, then re-request |
+| `autoscaling.minNodes` < 0 | autoscaled | deny | `403` JSON | `autoscaling minNodes %d is negative` | 1 entry, `allowed=false` | none automatic; repair out-of-band, then re-request |
+| `autoscaling.maxNodes` < 0 | autoscaled | deny | `403` JSON | `autoscaling maxNodes %d is negative` | 1 entry, `allowed=false` | none automatic; repair out-of-band, then re-request |
+| `maxNodes` < `minNodes` (window inverted) | autoscaled | deny | `403` JSON | `autoscaling maxNodes %d is below minNodes %d` | 1 entry, `allowed=false` | none automatic; repair out-of-band, then re-request |
+| any count field present but not an integer (`"desired": "three"`, `1.5`, `true`) | any | deny — at decode, before policy | `502` plain text `upstream error` | n/a — no policy decision is reached | 0 entries (server error log only) | yes, later — upstream must decode again |
+
+**Intentional non-malformed cases**, recorded so the denials above cannot be
+mistaken for over-broad validation:
+
+- `minNodes = maxNodes = 0` on an autoscaled pool — the documented paused
+  state, legal (see "Scale semantics").
+- A vestigial `desired` on an autoscaled pool — not policed (below).
+- An `autoscaling` block with `enabled: false` — the pool is judged as
+  fixed; its `minNodes`/`maxNodes` are vestigial and never validated, only
+  `desired` is. Symmetric with the vestigial-`desired` case.
+- `desired: 0` on a fixed pool — a legal zero, distinct from absent/`null`
+  (a JSON `null` decodes exactly like an absent field: both leave the
+  pointer nil, both are the "no desired count" deny).
 
 A negative `minNodes` is denied even when `maxNodes ≥ 0` would itself be a
 sane ceiling: guessing at which half of an invalid window upstream means is
@@ -169,14 +209,24 @@ all `EvaluateScale` denies:
   reason names the offending pool and field: `target pool state is malformed:
   …` when it is the pool being scaled, `org snapshot has malformed pool state:
   pool "<name>": …` when a bystander pool is the problem.
-- **Audit:** exactly one `audit` entry, `allowed=false`, carrying the same
-  reason and the requested count — recorded at the moment of the decision,
-  with no accompanying allows (the decision is made once; no patch means no
-  re-decisions).
+- **Audit:** exactly one `audit` entry, recorded at the moment of the
+  decision, with no accompanying allows (the decision is made once; no patch
+  means no re-decisions). Its payload is the complete `audit.Entry` shape and
+  nothing else (pinned by `internal/audit`'s `documentedKeys`): `caller`
+  (token fingerprint, never the raw token), `remote_addr`, `action="scale"`,
+  `account`, `namespace`, `pool` — the pool the caller asked to scale, even
+  when the reason names a different (bystander) pool as the offender —
+  `count` (the requested count), `allowed=false`, and `reason` (the
+  canonical reason above).
 - **Retry:** none, automatically. A retry would re-list the same malformed
   snapshot and re-deny — pure load. This differs from the 409 path, where
   retrying is the whole point: there the state is *fresh*, here it is
-  *broken*. The condition is upstream's to fix out-of-band (the same class of
+  *broken*. The one place warden's own retry meets malformed state is the
+  conflict loop: an out-of-band writer that breaks a pool between warden's
+  patch and its re-decision makes that re-decision deny on the fresh
+  snapshot — the caller then sees 403, not 409
+  (`TestRetryReDecisionDeniesSnapshotThatBecameMalformed`). The condition is
+  upstream's to fix out-of-band (the same class of
   re-shape as lowering a floor); after the fix the identical request
   succeeds. Callers should treat the 403 like any other policy denial: do not
   retry as-is, fix the named pool, re-request.
@@ -185,7 +235,10 @@ Evaluation order: request `count ≥ 0` → snapshot bounds interpretable →
 target floor → class allowlist → target bid → org total. A caller's own
 mistake (negative count) is reported before upstream's, and the malformed
 check runs before every pool-derived check because the floor, allowlist, bid,
-and cap decisions all assume the snapshot means what it says.
+and cap decisions all assume the snapshot means what it says. One gate sits
+in front of all of these at the server layer: the grandfathered-bid check
+runs before `EvaluateScale` entirely, so a target failing both reports the
+grandfather reason — either way a deny, never an allow.
 
 ## Impossible by construction
 

@@ -184,6 +184,57 @@ func TestMalformedPoolStateNeverAttemptsPatch(t *testing.T) {
 	}
 }
 
+// The wire-invalid sibling of the malformed states above: a count field that
+// is present but not an integer ("three", 1.5, true) never reaches policy —
+// the pool list itself fails to decode, so the request fails closed one
+// layer earlier and differently: plain-text 502, no audit entry (no decision
+// was made), no patch, and retryable once upstream decodes again. Pinned so
+// the decision matrix's last row (docs/notes/invariant-policy.md,
+// "Malformed upstream state") cannot silently rot.
+func TestWireInvalidCountFieldFailsClosedAtDecode(t *testing.T) {
+	var auditBuf bytes.Buffer
+	auditLog := slog.New(slog.NewJSONHandler(&auditBuf, nil))
+	s, f := newCeilingTestServer(t, testOrgCap, map[string]*fakePoolState{
+		"pool-a": {invalidDesiredJSON: true, serverClass: testClass, bidPrice: "0.01"},
+	}, nil, auditLog)
+
+	rec := s.scaleSync(t, "pool-a", 1)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502: %s", rec.Code, rec.Body.String())
+	}
+	if body := strings.TrimSpace(rec.Body.String()); body != "upstream error" {
+		t.Fatalf("body = %q, want the plain-text upstream error", body)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.patches) != 0 {
+		t.Fatalf("decode-failure path sent %d upstream PATCH(es): %+v", len(f.patches), f.patches)
+	}
+
+	// No audit entry: the request never reached a decision. The decode error
+	// is visible only in the server's error log, not the audit trail.
+	var auditEntries int
+	sc := bufio.NewScanner(&auditBuf)
+	for sc.Scan() {
+		var line struct {
+			Msg string `json:"msg"`
+		}
+		if err := json.Unmarshal(sc.Bytes(), &line); err != nil {
+			t.Fatalf("log line not JSON: %v\n%s", err, sc.Text())
+		}
+		if line.Msg == "audit" {
+			auditEntries++
+		}
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatalf("reading audit log: %v", err)
+	}
+	if auditEntries != 0 {
+		t.Fatalf("expected no audit entries for an undecodable snapshot, got %d", auditEntries)
+	}
+}
+
 // An out-of-band writer that makes the pool malformed between warden's first
 // patch and its retry: the re-decision re-validates the fresh snapshot and
 // fails closed on it. 409-to-403, one patch attempt, pool left untouched.

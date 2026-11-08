@@ -31,7 +31,7 @@ reachable).
 |--------|------|------|
 | `200` | JSON (below) | Pools listed from the org namespace |
 | `401` | `missing bearer token` or `unauthorized` | No/!`Bearer` scheme header, or token not in the allowlist |
-| `502` | `upstream error` | Spot unreachable, OAuth exchange failed, non-200 from Spot, or per-request timeout |
+| `502` | `upstream error` | Spot unreachable, OAuth exchange failed, non-200 from Spot, per-request timeout, or a 200 body that fails to decode as a pool list (e.g. a count field that is not an integer) |
 
 `200` body:
 
@@ -76,7 +76,7 @@ decode (400) → list pools (502) → pool exists (404) → policy (403) → app
 | `403` | JSON `{"allowed":false,"reason":"…"}` | **Every** policy denial — see below |
 | `404` | `pool not found` | No pool with that name in the org namespace |
 | `409` | JSON `{"allowed":false,"reason":"pool changed concurrently on every attempt; retry later"}` | All `maxScaleAttempts` optimistic-concurrency retries lost the race; nothing was applied |
-| `502` | `upstream error` / `upstream error applying scale` | Spot list/patch failed (incl. timeout, OAuth failure) |
+| `502` | `upstream error` / `upstream error applying scale` | Spot list/patch failed (incl. timeout, OAuth failure), or the pool list failed to decode (a count field that is not an integer — never reaches policy) |
 
 Body-decoding details that surprise callers:
 
@@ -107,7 +107,10 @@ The last two rows are the malformed-upstream-state rule
 a pool whose node-count fields cannot be interpreted could under-count the
 org ceiling, so no scale is decided against a snapshot containing one. Unlike
 the other 403s, no `count` change can help — only an out-of-band repair of
-the named pool.
+the named pool. A count field that is invalid at the wire level
+(`"desired": "three"`, `1.5`) is one step earlier still: the pool list
+itself fails to decode, so no policy decision — 502 `upstream error`, no
+audit entry, and *retryable* once upstream decodes again, unlike the 403s.
 
 `reason` strings are diagnostic, not a stable enum — match on the status code,
 log the reason. Unknown pool is deliberately *not* folded into the 403: it is a

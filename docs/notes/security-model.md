@@ -50,8 +50,10 @@ callers we don't fully trust, without ever handing them that token.
    reachable only over the cluster's Tailscale/Traefik `vpn` entrypoint
    (`warden-rs-manager.ardenone.com:8444`) — never the public internet.
 
-6. **Audit.** Every decision, allow or deny, is logged with the caller
-   fingerprint, action, pool, count, and reason.
+6. **Audit.** Every policy decision, allow or deny, is logged as one `audit`
+   entry carrying exactly: the caller fingerprint (never the raw token),
+   remote address, action, account, organization namespace, pool, requested
+   count, the decision (`allowed`), and the reason.
 
 ## Caller authentication
 
