@@ -189,3 +189,41 @@ no-op-content patches throughout (wire evidence excerpt lives in
   as the cause of the 409).
 - The 200 no-op patch again left the RV unchanged; org state identical
   pre/post probe.
+
+### End-to-end retry-path probe 2026-11-08 (bead `warden-06e84fb5`)
+
+Fourth credentialed pass, same pool — but the traffic this time was warden
+itself: a binary built from committed `main` HEAD running the deployed
+rs-manager policy (`ch.vs1.large-ord` allowlist, cap 10, bid cap 0.01, spot
+guard not started), patching strictly no-op content (`desired 2→2`) through
+a local injection proxy that forwards to the live API verbatim and rewrites
+each patch's resourceVersion to (sent−1). Every status below is the real
+API's; the proxy fabricates nothing. Field-level injector trace (ts UTC,
+all requests `namespaces/org-knyiltp8zznvkz5g` unless noted):
+
+Run 1 — inject the first patch only (conflict → retry succeeds):
+
+```
+19:15:27.963Z GET   …/spotnodepools                                   200  (LIST)
+19:15:28.512Z GET   …/serverclasses/ch.vs1.large-ord                  200
+19:15:28.831Z PATCH …/spotnodepools/88c5e399-…  rv 84339248→84339247 (injected) 409
+19:15:29.246Z GET   …/spotnodepools                                   200  (re-LIST)
+19:15:29.735Z GET   …/serverclasses/ch.vs1.large-ord                  200
+19:15:30.298Z PATCH …/spotnodepools/88c5e399-…  rv 84339248 (pass-through)      200
+```
+
+Warden logged the attempt-1 re-evaluation warning, audited two allows (one
+per decision), and returned `200 {"allowed":true,…}` to its caller.
+
+Run 2 — inject every patch (exhaustion): four PATCHes
+`rv 84339248→84339247 (injected) → 409` (19:16:24.581Z, 19:16:25.745Z,
+19:16:26.836Z, 19:16:28.003Z), each preceded by a `200` LIST (4 LISTs
+total), re-evaluation warnings for attempts 1–3; warden returned **409**
+`{"allowed":false,"reason":"pool changed concurrently on every attempt;
+retry later"}` and audited four allows plus one final deny (`pool changed
+concurrently on every attempt; request not applied`). A first run-2 attempt
+had hit a proxy-restart gap and failed at LIST with warden's fail-closed
+502 — no upstream effect; the request was re-sent once the proxy was bound.
+Org state byte-identical pre/post probe (`84339248` / generation `2` /
+desired `2`), consistent with the no-op-does-not-bump-RV behavior above and
+with no ceiling-unchecked write landing.

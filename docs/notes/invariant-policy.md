@@ -173,6 +173,56 @@ Therefore parent bead item **(b) holds**: the live ngpc API **enforces** the
 `resourceVersion` precondition on merge patches — a stale RV is rejected
 with 409. Ceiling-race layer 2 is not inert.
 
+**Live end-to-end retry-path verification (2026-11-08T19:15:27Z–19:16:28Z,
+bead `warden-06e84fb5`):** this time the loop itself, not just its inputs,
+ran against the live API. A warden binary built from committed `main` HEAD
+ran with the deployed rs-manager policy (`ch.vs1.large-ord` allowlist, cap
+10, bid cap 0.01; spot guard not started), pointed at a local
+conflict-injection proxy that forwards every request to the real ngpc API
+verbatim and rewrites each patch's `metadata.resourceVersion` to
+(sent − 1) — the exact value class the probe above proved the real API
+rejects with 409. The proxy fabricates no response: every status below is
+the real upstream's. Patch content was strictly no-op (`desired 2→2`), and
+the target was the same pool (rv `84339248`, generation `2`, autoscaling
+disabled; bid `0.01` meets the class minimum `0.01`, so the request is a
+plain in-policy allow).
+
+- **Conflict → re-list → re-evaluate → retry succeeds.** A `{"count":2}`
+  request with only the first patch rewritten. Wire: LIST `200` → class GET
+  `200` → PATCH carrying `84339248`, sent as `84339247`, **409** (the real
+  conflict message) → warden logged `scale: pool changed concurrently,
+  re-evaluating against fresh state` (attempt 1) → **LIST `200`** → class
+  GET `200` → PATCH carrying `84339248` (fresh snapshot RV, passed through
+  unmodified) → **200**. The caller got `200` with `allowed:true` and
+  `scale "88c5e399-…" to 2 (org ceiling 2/10)`; warden audited one allow per
+  decision (two entries) — the documented loop end to end.
+- **Exhaustion → 409 to the caller, audited deny, nothing applied.** The
+  identical request with every patch rewritten: exactly `maxScaleAttempts`
+  (4) patches, each sent as `84339247`, each **409** from the real API, a
+  LIST before each attempt, re-evaluation warnings for attempts 1–3, and an
+  audit trail of **four allows (one per re-decision) plus one final deny**
+  (`pool changed concurrently on every attempt; request not applied`). The
+  caller received **409** with `pool changed concurrently on every attempt;
+  retry later`. A post-probe LIST showed rv/generation/desired
+  byte-identical to pre-probe (`84339248`/`2`/`2`) — no write ever landed
+  without a fresh-snapshot decision behind it.
+
+Method note: the conflict was injected deterministically by the proxy's RV
+rewrite rather than by a real concurrent writer — the only way to bump the
+live RV is a real modification, and deliberately mutating a production
+pool, even transiently, is not an authorized probe action. From warden's
+side the two are indistinguishable: it held a snapshot the API declared
+stale and reacted exactly as documented. Because nothing upstream actually
+changed, the fresh snapshot equals the stale one, so the branch where
+re-evaluation *flips* the decision to a deny on fresh state is not
+live-exercised; it stays pinned by
+`TestRetryReDecisionDeniesSnapshotThatBecameMalformed`. The implemented
+loop (`internal/server/server.go`, `maxScaleAttempts = 4`) matched this
+document exactly — one planned attempt plus three re-decisions, one audit
+entry per decision, fail-closed 409 + audited deny on exhaustion; no
+mismatch found. Injector trace excerpt:
+`docs/research/rackspace-spot-api.md`.
+
 `TestConcurrentScaleNeverExceedsOrgCeiling` pins layer 1: its fake upstream
 applies patches unconditionally (deliberately no server-side CAS — the
 worst-case upstream), and proves 20 concurrent individually-allowed requests
