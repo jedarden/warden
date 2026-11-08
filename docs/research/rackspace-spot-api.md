@@ -173,3 +173,19 @@ could have moved the pool at all. Every finding above reproduced:
 - Org state identical pre/post probe. The RV being *still* `77772631` hours
   after the first probe is itself confirmation that no-op patches do not bump
   it — and that no out-of-band writer touched the pool in between.
+
+### Independently re-run 2026-11-08 (bead `warden-fc7bbe53`)
+
+Third credentialed pass, same pool (pre-state rv `"84339248"`, generation `2`,
+desired `2`, autoscaling disabled), patch shape exactly as warden sends it,
+a fresh GET before each send so RVs were exact at send time, strictly
+no-op-content patches throughout (wire evidence excerpt lives in
+`docs/notes/invariant-policy.md`):
+
+- Stale RV (`rv−1`) → **409**, exact conflict message above; post-patch GET
+  byte-identical to pre-state (rv/generation/desired unchanged) — the
+  precondition rejects the write, it does not apply-and-conflict.
+- Current RV, identical no-op content → **200** (control, isolating the RV
+  as the cause of the 409).
+- The 200 no-op patch again left the RV unchanged; org state identical
+  pre/post probe.

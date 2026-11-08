@@ -143,6 +143,36 @@ same pool returned HTTP 200 with
 recorded and no patch was sent. Therefore parent bead item **(a) holds**:
 live SpotNodePool objects expose `metadata.resourceVersion`.
 
+**Fresh stale-resourceVersion patch probe (2026-11-08T18:59:17Z–18:59:23Z,
+bead `warden-fc7bbe53`):** same credential reference as above (OpenBao
+`secret/rs-manager/warden/rackspace-spot/apexalgo-agent-organization`, field
+`api-token`; token exchanged for the bearer `id_token` and staged only in a
+mode-600 tmpfs file consumed via `curl -H @file` — never argv, never
+printed). Same live pool (`88c5e399-70ac-4825-a40f-7348395daf52`, pre-state
+`rv="84339248"`, `generation=2`, `spec.desired=2`, `autoscaling.enabled=false`).
+Patch shape exactly as warden sends it (`application/merge-patch+json`,
+`{"metadata":{"resourceVersion":…},"spec":{…}}`), with a fresh GET
+immediately before each send so the RVs were exact at send time:
+
+- **P1 — stale RV, no-op content.** Patch echoed `"84339247"` (rv−1) while
+  current was `"84339248"`: **HTTP 409**, body
+  `Operation cannot be fulfilled on spotnodepools.ngpc.rxt.io "<pool>": the
+  object has been modified; please apply your changes to the latest version
+  and try again`. Immediately following GET: `rv` still `"84339248"`,
+  `generation` still `2`, `spec.desired` still `2` — the write was
+  **rejected, not applied**.
+- **P2 — control, current RV, identical no-op content.** Same patch body
+  with `"84339248"`: **HTTP 200**. The 409 in P1 is therefore attributable
+  to the stale RV alone, not to the content or patch shape.
+- Both patches wrote the pool's then-current count back (strict no-op
+  content), and rv/generation/desired were identical pre- and post-probe
+  (`84339248` / `2` / `2`) — the org was not mutated, consistent with the
+  known "no-op patches do not bump the RV" behavior.
+
+Therefore parent bead item **(b) holds**: the live ngpc API **enforces** the
+`resourceVersion` precondition on merge patches — a stale RV is rejected
+with 409. Ceiling-race layer 2 is not inert.
+
 `TestConcurrentScaleNeverExceedsOrgCeiling` pins layer 1: its fake upstream
 applies patches unconditionally (deliberately no server-side CAS — the
 worst-case upstream), and proves 20 concurrent individually-allowed requests
