@@ -39,6 +39,12 @@ func TestMultipleTargetConfigurationFailsClosed(t *testing.T) {
 		{"scaling without envelope", `[{"account":"a","namespace":"org-a","refreshTokenEnv":"WARDEN_SPOT_REFRESH_TOKEN_ALPHA","allowScale":true}]`, "scaling requires"},
 		{"invalid namespace", `[{"account":"a","namespace":"org-a/spotnodepools","refreshTokenEnv":"WARDEN_SPOT_REFRESH_TOKEN_ALPHA"}]`, "namespace must be"},
 		{"unknown field", `[{"account":"a","namespace":"org-a","refreshTokenEnv":"WARDEN_SPOT_REFRESH_TOKEN_ALPHA","allowScal":true}]`, "unknown field"},
+		// Malformed target documents (bead warden-cb36aecc): broken JSON,
+		// trailing data after the array, and an empty array must each fail
+		// closed with their own reason rather than silently loading nothing.
+		{"malformed target JSON", `[{"account":"a","namespace":`, "invalid JSON"},
+		{"trailing data after array", `[{"account":"a","namespace":"org-a","refreshTokenEnv":"WARDEN_SPOT_REFRESH_TOKEN_ALPHA"}] {"account":"b"}`, "expected one JSON array"},
+		{"empty target array", `[]`, "at least one target is required"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -50,6 +56,13 @@ func TestMultipleTargetConfigurationFailsClosed(t *testing.T) {
 			_, err := Load()
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err=%v, want %q", err, tc.want)
+			}
+			// Configuration failures are logged at startup; they must name the
+			// environment variables, never the resolved credential values.
+			for _, secret := range []string{"alpha-secret", "beta-secret"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("config error leaked the credential value %q: %v", secret, err)
+				}
 			}
 		})
 	}
