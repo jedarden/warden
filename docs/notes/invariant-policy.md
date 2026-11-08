@@ -133,6 +133,16 @@ upstream rejects an RV-carrying patch with 400/422, Warden returns 502 without
 an unconditional retry. This also protects a grandfathered bid from a pool
 change between the policy read and the attempted write.
 
+**Fresh field-presence probe (2026-11-08T18:43:04Z–18:43:06Z):** using the
+OpenBao reference `secret/rs-manager/warden/rackspace-spot/apexalgo-agent-organization`
+(`api-token`) to authenticate read-only requests, LIST returned HTTP 200 with
+one item and the field-level sample
+`items[0].metadata.resourceVersion = "84339248"` (JSON string); GET for that
+same pool returned HTTP 200 with
+`metadata.resourceVersion = "84339248"` (JSON string). No full response was
+recorded and no patch was sent. Therefore parent bead item **(a) holds**:
+live SpotNodePool objects expose `metadata.resourceVersion`.
+
 `TestConcurrentScaleNeverExceedsOrgCeiling` pins layer 1: its fake upstream
 applies patches unconditionally (deliberately no server-side CAS — the
 worst-case upstream), and proves 20 concurrent individually-allowed requests
