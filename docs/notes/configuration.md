@@ -1,9 +1,12 @@
 # Configuration reference
 
-For multiple Spot accounts or organizations, use the explicit target
-configuration and scoped routes in
-[multi-account-protection.md](multi-account-protection.md). The variables below
-describe the legacy single-organization deployment and remain supported.
+The current deployment uses legacy single-target mode. For multiple Spot
+accounts or organizations, use the explicit target configuration and scoped
+routes in [multi-account-protection.md](multi-account-protection.md), with the
+credential wiring and GitOps rollout in
+[spot-token-provisioning.md](spot-token-provisioning.md). Do not point
+`WARDEN_ORG_NAMESPACE` at a second org to add it: that replaces the only
+legacy target.
 
 warden is configured entirely through `WARDEN_*` environment variables, read
 once at startup by `internal/config`. There is no config file and no runtime
@@ -13,12 +16,13 @@ reload: an invalid value fails `config.Load`, `cmd/warden` logs it and exits
 `declarative-config` commit + ArgoCD sync, never a live toggle (see
 [`invariant-policy.md`](invariant-policy.md), "Changing the envelope").
 
-## Required variables
+## Required variables by mode
 
 | Variable | Constraint |
 |----------|------------|
-| `WARDEN_SPOT_REFRESH_TOKEN` | Spot org refresh token; exchanged for the bearer the client actually sends (the OIDC `id_token`, not the opaque access token). Injected via envFrom the `warden-spot-credentials` ExternalSecret (OpenBao) — never in the repo, never logged. |
-| `WARDEN_ORG_NAMESPACE` | Must start with `org-` (validated). See "Org namespace" below. |
+| `WARDEN_SPOT_REFRESH_TOKEN` | Legacy mode only: the Spot org refresh token, injected via `warden-spot-credentials` ExternalSecret. Warden exchanges it for the OIDC `id_token`. |
+| `WARDEN_ORG_NAMESPACE` | Legacy mode only: must start with `org-`. See "Org namespace" below. |
+| `WARDEN_TARGETS_JSON` | Target mode selector: a non-empty JSON array of configured orgs with `refreshTokenEnv` references, never token values or OpenBao paths. Each referenced `WARDEN_SPOT_REFRESH_TOKEN_<ALIAS>` must be set. |
 | `WARDEN_CALLER_TOKENS` | Comma-separated, at least one after whitespace-trimming. Injected via envFrom the `warden-caller-tokens` ExternalSecret (OpenBao). Raw values are never logged; only sha256 fingerprints appear in audit records. Generation, rotation, revocation, and rollback: [`caller-token-provisioning.md`](caller-token-provisioning.md). |
 
 Missing or invalid ⇒ startup error naming the variable
@@ -26,14 +30,20 @@ Missing or invalid ⇒ startup error naming the variable
 
 ## All variables
 
+The `WARDEN_MAX_TOTAL_NODES`, `WARDEN_MAX_BID_PRICE`, and
+`WARDEN_ALLOWED_SERVER_CLASSES` values below describe the legacy envelope.
+Target mode takes those limits from each scaling target's JSON entry.
+
 | Variable | Default | Required | Meaning |
 |----------|---------|----------|---------|
 | `WARDEN_LISTEN_ADDR` | `:8080` | no | HTTP listen address |
 | `WARDEN_SPOT_BASE_URL` | `https://spot.rackspace.com` | no | Spot ngpc API base |
 | `WARDEN_SPOT_TOKEN_URL` | `https://login.spot.rackspace.com/oauth/token` | no | OAuth refresh-token endpoint |
 | `WARDEN_SPOT_CLIENT_ID` | Spot's public ngpc client ID (hardcoded; a public identifier, not a credential — see `internal/config/config.go`) | no | OAuth `client_id` for the refresh grant |
-| `WARDEN_SPOT_REFRESH_TOKEN` | — | **yes** | The org credential (see above) |
-| `WARDEN_ORG_NAMESPACE` | — | **yes** | The single Spot org namespace warden lists and scales (see below) |
+| `WARDEN_SPOT_REFRESH_TOKEN` | — | legacy mode | The legacy org credential (see above) |
+| `WARDEN_ORG_NAMESPACE` | — | legacy mode | The legacy Spot org namespace (see below) |
+| `WARDEN_TARGETS_JSON` | unset | target mode | Non-empty JSON array selecting target mode, even with one entry; contains env references, not credentials |
+| `WARDEN_SPOT_REFRESH_TOKEN_<ALIAS>` | — | for each target account | One distinct, non-empty env value per account alias; organizations on the same account share its reference |
 | `WARDEN_MAX_TOTAL_NODES` | `10` | no | Org-wide node ceiling; must be `>= 0` |
 | `WARDEN_MAX_BID_PRICE` | `0.01` | no | Bid cap — see the drift note below |
 | `WARDEN_ALLOWED_SERVER_CLASSES` | `gp.vs1.medium-iad` | no | Comma-separated allowlist; must resolve to at least one class |
@@ -45,7 +55,7 @@ Spot price guard (optional; see [`spot-price-guard.md`](spot-price-guard.md)):
 | Variable | Default | Required | Meaning |
 |----------|---------|----------|---------|
 | `WARDEN_SPOT_GUARD_JSON` | unset (no guard) | no | Guard target, threshold, timing, `dryRun` (defaults to `true`) |
-| `WARDEN_SPOT_REFRESH_TOKEN_<ACCOUNT>` | — | with the guard | The guarded org's refresh token, named by the guard's `refreshTokenEnv` (deployed: `..._APEXALGO`, main org) |
+| `WARDEN_SPOT_REFRESH_TOKEN_<ALIAS>` | — | with the guard | The guarded account's refresh token, named by the guard's `refreshTokenEnv` (deployed: `..._APEXALGO`, main org); reuse this env reference if that account is also a caller target |
 | `WARDEN_ALERT_NTFY_URL` | — | with the guard | Existing ntfy paging topic URL — a credential, never logged |
 | `WARDEN_ALERT_NTFY_TOKEN` | empty | no | Optional ntfy bearer token |
 
@@ -84,14 +94,14 @@ authoritative (`deploy/deployment.yaml` → `declarative-config`):
 serverclasses API, 2026-07-27). Code, deployment, and all docs now agree on
 `0.01` — bead `warden-5787adc4` has the history.
 
-## Org namespace — exactly one
+## Org namespace in the deployed legacy mode
 
 **warden operates against the dedicated `apexalgo-agent` Spot org, namespace
 `org-knyiltp8zznvkz5g`** (set in `deploy/deployment.yaml`; confirmed via the
 2026-07-27 live-API probe). The identifier itself is not a secret — without
 that org's refresh token it grants nothing.
 
-This single-namespace scope is load-bearing, not incidental:
+This single-namespace scope is load-bearing in legacy mode:
 
 - Every list and every scale patch is issued against
   `…/namespaces/<WARDEN_ORG_NAMESPACE>/spotnodepools` and nothing else —
@@ -100,7 +110,8 @@ This single-namespace scope is load-bearing, not incidental:
 - The org-wide node ceiling is computed by summing `UpperBound` over the pools
   returned by that one list call. The cap is a true ceiling **only because all
   scale-able pools live in this one namespace**; a pool outside it would be
-  uncounted. One warden instance ⇒ one org namespace, by construction.
+  uncounted. In target mode each configured org has its own namespace and
+  independent scaling envelope; one Warden instance may serve several.
 
 This is the enforcement-layer complement of the blast-radius floor: the
 dedicated org (see [`security-model.md`](security-model.md)) is what bounds

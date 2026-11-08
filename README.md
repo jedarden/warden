@@ -114,17 +114,22 @@ count-only, resource-version-guarded patch. See
 ## Configuration
 
 All configuration is `WARDEN_*` environment variables, read once at startup;
-invalid config exits `1` before listening. Required:
-`WARDEN_SPOT_REFRESH_TOKEN`, `WARDEN_ORG_NAMESPACE` (must start `org-`), and
-`WARDEN_CALLER_TOKENS`. Everything else defaults — org ceiling `10`, class
-`gp.vs1.medium-iad`, bid cap `0.01` (raised from an earlier documented `0.001`
-when Spot moved the floor; bead `warden-5787adc4`).
+invalid config exits `1` before listening. The current legacy deployment
+requires `WARDEN_SPOT_REFRESH_TOKEN`, `WARDEN_ORG_NAMESPACE` (must start
+`org-`), and `WARDEN_CALLER_TOKENS`. In target mode,
+`WARDEN_TARGETS_JSON` names one `WARDEN_SPOT_REFRESH_TOKEN_<ALIAS>` env
+reference per account instead of using the legacy org/token pair. The legacy
+defaults are org ceiling `10`, class `gp.vs1.medium-iad`, bid cap `0.01`
+(raised from an earlier documented `0.001` when Spot moved the floor; bead
+`warden-5787adc4`).
 
 The deployment pins the namespace to the dedicated `apexalgo-agent` org
 (`org-knyiltp8zznvkz5g`) and the class allowlist to the real pool's class
 (`ch.vs1.large-ord`) rather than the code default — the defaults-vs-deployed
-table, the full variable reference, and why the ceiling's accounting requires
-the single namespace are in [`docs/notes/configuration.md`](docs/notes/configuration.md).
+table, the full variable reference, and the per-org ceiling rule are in
+[`docs/notes/configuration.md`](docs/notes/configuration.md). Target-mode
+credential wiring and rotation are in
+[`docs/notes/spot-token-provisioning.md`](docs/notes/spot-token-provisioning.md).
 
 ## Structure
 
