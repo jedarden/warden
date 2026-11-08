@@ -106,7 +106,34 @@ enforce. The window is closed by two layers:
    the race, warden fails closed: 409 to the caller, nothing applied, audited
    as a deny.
 
-**Verified live (2026-09-16, credentialed probe — bead `warden-efd77a40`;
+**Verification status — settled; all three parent checks confirmed live.**
+The parent verification bead `warden-efd77a40` was answered by a credentialed
+probe on 2026-09-16 (below), and every check was independently re-run fresh on
+2026-11-08. The precondition is verified, not assumed — nothing in this
+document records it as unverified:
+
+- **(a) `metadata.resourceVersion` exposure — verified 2026-09-16 and again
+  2026-11-08** (fresh field-presence probe, bead `warden-c5680dda`; below):
+  present on GET and on the LIST warden snapshots, decimal JSON string.
+- **(b) stale-resourceVersion merge-patch rejection — verified 2026-09-16 and
+  again 2026-11-08** (fresh stale-RV patch probe, bead `warden-fc7bbe53`;
+  below): a merge patch carrying rv−1 is rejected with **409** and the write
+  is **not applied**; the identical body with the current RV applies.
+- **(c) the warden retry path — verified live end-to-end 2026-11-08**
+  (conflict-injection probe, bead `warden-06e84fb5`; below): 409 → re-list →
+  re-evaluate → retry succeeds; exhausting `maxScaleAttempts` → 409 to the
+  caller, audited deny, nothing applied.
+
+**Verdict: ceiling-race layer 2 is real, not inert.** The live ngpc API
+enforces the `resourceVersion` precondition, so the inert clause the parent
+bead asked to be recorded conditionally does **not** apply. For the record, it
+would have read: *if upstream silently ignores the precondition, ceiling-race
+layer 2 is inert and the single-flight mutex (layer 1) is the only effective
+defense* — that is not how the upstream behaves, as (b) shows. No open
+question about layer 2 remains in this document. Layer 1 stays the primary
+mechanism regardless, because it does not depend on upstream semantics at all.
+
+**Original live probe (2026-09-16, credentialed — bead `warden-efd77a40`;
 independently re-run on close the same day with strictly no-op-content
 patches, org state byte-identical pre/post; wire details in
 `docs/research/rackspace-spot-api.md`):** layer 2 is **real**,
@@ -133,7 +160,8 @@ upstream rejects an RV-carrying patch with 400/422, Warden returns 502 without
 an unconditional retry. This also protects a grandfathered bid from a pool
 change between the policy read and the attempted write.
 
-**Fresh field-presence probe (2026-11-08T18:43:04Z–18:43:06Z):** using the
+**Fresh field-presence probe (2026-11-08T18:43:04Z–18:43:06Z, bead
+`warden-c5680dda`):** using the
 OpenBao reference `secret/rs-manager/warden/rackspace-spot/apexalgo-agent-organization`
 (`api-token`) to authenticate read-only requests, LIST returned HTTP 200 with
 one item and the field-level sample
@@ -206,6 +234,10 @@ plain in-policy allow).
   retry later`. A post-probe LIST showed rv/generation/desired
   byte-identical to pre-probe (`84339248`/`2`/`2`) — no write ever landed
   without a fresh-snapshot decision behind it.
+
+Parent bead item **(c) holds**: warden's re-list/re-evaluate/retry loop and
+its fail-closed exhaustion behave exactly as this document describes them,
+observed live end to end.
 
 Method note: the conflict was injected deterministically by the proxy's RV
 rewrite rather than by a real concurrent writer — the only way to bump the
