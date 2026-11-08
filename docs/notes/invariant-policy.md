@@ -156,14 +156,14 @@ wire-invalid sibling — a count field that cannot decode at all never
 reaches policy and fails closed one layer earlier, with different
 semantics.
 
-| Input condition (upstream wire state) | Pool kind | Decision | HTTP | Canonical `<detail>` | Audit | Retry |
+| Input condition (upstream wire state) | Pool kind | Decision | HTTP | Stable reason family and canonical `<detail>` | Audit event | Retry |
 |---|---|---|---|---|---|---|
-| `spec.desired` absent or `null` | fixed | deny | `403` JSON | `fixed pool has no desired count` | 1 entry, `allowed=false` | none automatic; repair out-of-band, then re-request |
-| `spec.desired` < 0 | fixed | deny | `403` JSON | `desired count %d is negative` | 1 entry, `allowed=false` | none automatic; repair out-of-band, then re-request |
-| `autoscaling.minNodes` < 0 | autoscaled | deny | `403` JSON | `autoscaling minNodes %d is negative` | 1 entry, `allowed=false` | none automatic; repair out-of-band, then re-request |
-| `autoscaling.maxNodes` < 0 | autoscaled | deny | `403` JSON | `autoscaling maxNodes %d is negative` | 1 entry, `allowed=false` | none automatic; repair out-of-band, then re-request |
-| `maxNodes` < `minNodes` (window inverted) | autoscaled | deny | `403` JSON | `autoscaling maxNodes %d is below minNodes %d` | 1 entry, `allowed=false` | none automatic; repair out-of-band, then re-request |
-| any count field present but not an integer (`"desired": "three"`, `1.5`, `true`) | any | deny — at decode, before policy | `502` plain text `upstream error` | n/a — no policy decision is reached | 0 entries (server error log only) | yes, later — upstream must decode again |
+| `spec.desired` absent or `null` | fixed | deny | `403` JSON | `target pool state is malformed` or `org snapshot has malformed pool state`; `fixed pool has no desired count` | one `msg:"audit"`, `action:"scale"`, `allowed=false` | none automatic; repair out-of-band; zero patches |
+| `spec.desired` < 0 | fixed | deny | `403` JSON | same families; `desired count %d is negative` | same event; requested target and count retained | none automatic; repair out-of-band; zero patches |
+| `autoscaling.minNodes` < 0 | autoscaled | deny | `403` JSON | same families; `autoscaling minNodes %d is negative` | same event; requested target and count retained | none automatic; repair out-of-band; zero patches |
+| `autoscaling.maxNodes` < 0 | autoscaled | deny | `403` JSON | same families; `autoscaling maxNodes %d is negative` | same event; requested target and count retained | none automatic; repair out-of-band; zero patches |
+| `maxNodes` < `minNodes` (window inverted) | autoscaled | deny | `403` JSON | same families; `autoscaling maxNodes %d is below minNodes %d` | same event; requested target and count retained | none automatic; repair out-of-band; zero patches |
+| any count field present but not an integer (`"desired": "three"`, `1.5`, `true`) | any | deny — at decode, before policy | `502` plain text `upstream error` | n/a — no policy reason | no `msg:"audit"` event; no decision | yes, later — upstream must decode again; zero patches |
 
 **Intentional non-malformed cases**, recorded so the denials above cannot be
 mistaken for over-broad validation:
@@ -209,7 +209,7 @@ all `EvaluateScale` denies:
   reason names the offending pool and field: `target pool state is malformed:
   …` when it is the pool being scaled, `org snapshot has malformed pool state:
   pool "<name>": …` when a bystander pool is the problem.
-- **Audit:** exactly one `audit` entry, recorded at the moment of the
+- **Audit:** exactly one stable `msg:"audit"` event, recorded at the moment of the
   decision, with no accompanying allows (the decision is made once; no patch
   means no re-decisions). Its payload is the complete `audit.Entry` shape and
   nothing else (pinned by `internal/audit`'s `documentedKeys`): `caller`
@@ -217,7 +217,10 @@ all `EvaluateScale` denies:
   `account`, `namespace`, `pool` — the pool the caller asked to scale, even
   when the reason names a different (bystander) pool as the offender —
   `count` (the requested count), `allowed=false`, and `reason` (the
-  canonical reason above).
+  canonical reason above). The two outer malformed-state reason families and
+  the detail labels in the matrix are stable names; only values interpolated
+  into `%d`/`%q` positions vary. A decode failure has no event because it never
+  reaches an authorization decision.
 - **Retry:** none, automatically. A retry would re-list the same malformed
   snapshot and re-deny — pure load. This differs from the 409 path, where
   retrying is the whole point: there the state is *fresh*, here it is

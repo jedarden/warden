@@ -112,9 +112,62 @@ the named pool. A count field that is invalid at the wire level
 itself fails to decode, so no policy decision — 502 `upstream error`, no
 audit entry, and *retryable* once upstream decodes again, unlike the 403s.
 
-`reason` strings are diagnostic, not a stable enum — match on the status code,
-log the reason. Unknown pool is deliberately *not* folded into the 403: it is a
-`404` (the request never reached a policy decision about a real pool).
+`reason` has no separate `reason_code` field. For malformed policy denials,
+the following names are stable contract terms: the outer reason family is
+`target pool state is malformed` when the requested pool is broken, or
+`org snapshot has malformed pool state` when a bystander pool is broken; the
+detail labels in the table are stable and only their numeric/name values are
+interpolated. Callers should still branch on the status (`403`) and
+`allowed:false`, then retain the full reason for diagnosis. Unknown pool is
+deliberately *not* folded into the 403: it is a `404` (the request never
+reached a policy decision about a real pool).
+
+### Malformed-state API and audit contract
+
+The malformed-state rows have one explicit response and audit contract. The
+requested pool is always the API path target; a malformed bystander named in
+the reason does not change the response's `pool` audit field. `count` is always
+the caller's requested count, including when it is negative or would have
+repaired an inverted window.
+
+| State | Stable API reason name | Response | Audit event | Retry / mutation |
+|---|---|---|---|---|
+| Fixed `desired` absent or `null` | `target pool state is malformed` or `org snapshot has malformed pool state`; detail `fixed pool has no desired count` | `403` JSON denial | exactly one `msg:"audit"`, `action:"scale"`, `allowed:false` with target `pool`, requested `count`, and full `reason` | no automatic retry; zero upstream patches; repair out-of-band, then re-request |
+| Fixed `desired` negative | same family; detail `desired count %d is negative` | `403` JSON denial | same event and fields | no automatic retry; zero upstream patches; repair out-of-band, then re-request |
+| Autoscaled `minNodes` negative | same family; detail `autoscaling minNodes %d is negative` | `403` JSON denial | same event and fields | no automatic retry; zero upstream patches; repair out-of-band, then re-request |
+| Autoscaled `maxNodes` negative | same family; detail `autoscaling maxNodes %d is negative` | `403` JSON denial | same event and fields | no automatic retry; zero upstream patches; repair out-of-band, then re-request |
+| Autoscaled `maxNodes < minNodes` | same family; detail `autoscaling maxNodes %d is below minNodes %d` | `403` JSON denial | same event and fields | no automatic retry; zero upstream patches; repair out-of-band, then re-request |
+| Count field present but not an integer (`"three"`, `1.5`, `true`) | no policy reason: decode fails before policy | `502` plain text `upstream error` | no `msg:"audit"` event because no authorization decision occurred | retry later; zero upstream patches |
+
+For the five policy rows, the target/bystander family is selected by which pool
+is malformed, but the audit `pool` remains the pool named in the request path.
+The audit event's complete payload is `caller`, `remote_addr`, `action`,
+`account`, `namespace`, `pool`, `count`, `allowed`, and `reason`; `caller` is
+the token fingerprint, never the raw token. The event name `audit` and
+`action="scale"` are stable. A malformed policy decision returns before the
+write/retry loop, so malformed input cannot mutate upstream state.
+
+Example target denial:
+
+```http
+POST /v1/pools/agent-pool/scale HTTP/1.1
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"count":9}
+```
+
+```http
+HTTP/1.1 403 Forbidden
+Content-Type: application/json
+
+{"allowed":false,"reason":"target pool state is malformed: autoscaling maxNodes 2 is below minNodes 8 (fix the pool out-of-band; warden will not act on state it cannot interpret)"}
+```
+
+The corresponding audit record has `pool:"agent-pool"`, `count:9`,
+`allowed:false`, `action:"scale"`, `msg:"audit"`, and the same complete
+reason. If `pool-b` were the malformed bystander, the reason would name
+`pool-b` but the audit record would still carry `pool:"agent-pool"`.
 
 Every scale decision — allow, deny, per-retry re-decision, and 404 — is
 audited (see [`security-model.md`](security-model.md)), so a retried request

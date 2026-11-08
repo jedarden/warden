@@ -50,10 +50,15 @@ callers we don't fully trust, without ever handing them that token.
    reachable only over the cluster's Tailscale/Traefik `vpn` entrypoint
    (`warden-rs-manager.ardenone.com:8444`) — never the public internet.
 
-6. **Audit.** Every policy decision, allow or deny, is logged as one `audit`
-   entry carrying exactly: the caller fingerprint (never the raw token),
-   remote address, action, account, organization namespace, pool, requested
-   count, the decision (`allowed`), and the reason.
+6. **Audit.** Every policy decision, allow or deny, is logged as one stable
+   `msg:"audit"` event. Scale decisions use `action:"scale"` and carry exactly:
+   the caller fingerprint (never the raw token), remote address, action,
+   account, organization namespace, the pool named by the request path,
+   requested count, the decision (`allowed`), and the canonical reason. For a
+   malformed bystander, the reason names the offending pool but the audit
+   `pool` remains the requested target; `count` remains the caller's requested
+   count. A wire decode failure is not a policy decision and therefore emits
+   no audit event.
 
 ## Caller authentication
 
