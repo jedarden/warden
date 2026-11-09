@@ -193,7 +193,7 @@ once at process start** (`internal/config/config.go`). Unlike the Spot refresh
 token — which at least fails late via its ~24h id_token cache — a rotation
 that stops before the pod restart does *nothing at all*: no error, no log
 line, the old allowlist keeps serving. Both restarts below are therefore
-load-bearing, and both are operator actions.
+load-bearing and are performed through the GitOps Deployment manifest.
 
 Use the overlap pattern for zero outage (verified end-to-end against OpenBao
 versioning 2026-09-17 — the version steps and rollback below ran clean on a
@@ -228,20 +228,16 @@ allowlist entries):
    and the stdin pipe. If the CAS write fails, stop and get a fresh metadata
    version rather than retrying with an unverified number. Both tokens are now
    valid in the store.
-3. **Wait for ESO** (≤1h, or operator force-sync:
-   `kubectl -n warden annotate externalsecret warden-caller-tokens
-   external-secrets.io/force-sync=$(date +%s)`) and confirm `SecretSynced=True`
-   with LAST SYNC advanced. The annotation *value* is irrelevant to the
-   operator: any write to the ExternalSecret bumps its `resourceVersion`,
-   which makes the next reconcile refresh immediately (ESO's
-   `shouldRefreshPeriodic`, verified against v2.2.0 source). The
-   `external-secrets.io/force-sync` key is the one a ClusterExternalSecret
-   mirrors, so it is the documented key to use here too. Treat the annotate
-   as a transient poke, not desired state — the sync fires once, and the 1h
-   tick is the fallback regardless.
-4. **Operator: restart the workload**
-   (`kubectl -n warden rollout restart deployment/warden`). The pod now
-   accepts both tokens.
+3. **Wait for ESO** (≤1h) and confirm `SecretSynced=True` with LAST SYNC
+   advanced. For an earlier refresh, commit a changed
+   `external-secrets.io/force-sync` annotation on the ExternalSecret in
+   `declarative-config` and let ArgoCD sync it. Any change to the
+   ExternalSecret's `resourceVersion` prompts the next reconcile (ESO's
+   `shouldRefreshPeriodic`, verified against v2.2.0 source). The 1h tick is
+   the fallback. Confirm the K8s Secret has refreshed before the restart.
+4. **Restart the workload through GitOps.** Commit a changed pod-template
+   annotation on the Deployment in `declarative-config`, let ArgoCD roll it
+   out, and confirm the new pod is ready. It now accepts both tokens.
 5. **Confirm the consumer's handoff** out-of-band with `GET /v1/pools` → 200.
    If the consumer handoff was not needed, skip this check; otherwise the
    value must have been sent from the protected context in step 2 to the

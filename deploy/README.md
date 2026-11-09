@@ -55,7 +55,7 @@ cluster uses (see `armor`, `traefik-forward-auth`, etc. in declarative-config).
 Remaining: hand the caller token to the autoscaler/dispatcher out-of-band (its
 own secret) and point it at warden — a separate, deliberate step. The
 consumer-side half now exists: the executable reference consumer
-(`cmd/wardenctl`, embedding `internal/intent`) and the full handoff runbook
+(`cmd/wardenctl`, importing `intent`) and the full handoff runbook
 ([`docs/notes/consumer-integration.md`](../docs/notes/consumer-integration.md))
 — rollout, rotation, revocation, rollback, and the bounded scale/restore
 exercise. `wardenctl unauth-check` verified live against this deployment

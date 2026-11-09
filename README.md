@@ -74,12 +74,12 @@ permission, state, rollout, and the repeatable fire drill).
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET`  | `/healthz` | Liveness (no auth) |
-| `GET`  | `/v1/pools` | List pools with class, bid, and the acceptable node-count window (`lowerBound`/`upperBound`) |
+| `GET`  | `/v1/pools` | List pools with class, bid, current bound (`upperBound`), and minimum (`lowerBound`) |
 | `POST` | `/v1/pools/{name}/scale` | Set node count on an existing pool: `{"count": N}` |
 
 All `/v1` calls require a caller bearer token (`Authorization: Bearer <token>`).
-Consumers don't build that by hand: `internal/intent` is the client package an
-autoscaler or dispatcher embeds (one token, by reference; window-guarded
+Consumers don't build that by hand: `intent` is the public Go client package an
+autoscaler or dispatcher imports (one token, by reference; capacity-guarded
 scale; auth-boundary check), `cmd/wardenctl` the reference CLI. Handing a
 token to a consumer — secret reference, rollout, rotation, revocation,
 rollback — is [`docs/notes/consumer-integration.md`](docs/notes/consumer-integration.md).
@@ -104,9 +104,11 @@ never `desired`, which the upstream cluster-autoscaler owns and would revert,
 and never `autoscaling.minNodes`. A `count` below the pool's current
 `autoscaling.minNodes` is denied (403), because it would invert the window;
 lower the floor out-of-band first. That floor is visible to callers as
-`lowerBound` on `GET /v1/pools` (0 on a fixed pool), paired with `upperBound`
-— the count window the scale endpoint accepts. Scale-to-zero on an autoscaled
-pool (`minNodes: 0`) sets `maxNodes: 0` — the pool is paused, not deleted.
+`lowerBound` on `GET /v1/pools` (0 on a fixed pool). `upperBound` is the
+pool's **current** `maxNodes` or `desired`, not the highest count warden
+accepts: growth above it is possible while the org-wide `cap` permits it.
+Scale-to-zero on an autoscaled pool (`minNodes: 0`) sets `maxNodes: 0` — the
+pool is paused, not deleted.
 For an existing pool already outside the class/bid envelope, or an organization
 already above its ceiling, only a strict reduction below the pool's current
 `upperBound` is allowed, including scale-to-zero when the floor permits it.
@@ -143,7 +145,7 @@ credential wiring and rotation are in
 - `internal/policy/` — the enforcement core (pure, exhaustively tested)
 - `internal/guard/` — the Spot price guard: state machine, narrow write permit, ConfigMap state store, ntfy alerts
 - `internal/spot/` — Rackspace Spot API client + OAuth token manager
-- `internal/intent/` — consumer-side client for warden's own API: bearer-token presentation, error contract, window-guarded scale
+- `intent/` — public Go client for warden's own API: bearer-token presentation, error contract, capacity-guarded scale
 - `internal/server/` — the intent API + caller auth + audit
 - `deploy/` — manifests for the rs-manager deployment, **live since 2026-07-30** (image `ronaldraygun/warden:0.3.0` since 2026-10-11, reachable at `warden-rs-manager.ardenone.com:8444` over the tailnet). Source of truth is `declarative-config` at `k8s/rs-manager/warden/`, synced by ArgoCD Application `warden-ns-rs-manager`; this copy is a staging mirror — never applied with `kubectl` directly
 - `docs/notes/` — security model, invariant policy, API error contract, configuration reference

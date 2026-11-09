@@ -11,8 +11,8 @@ side. The server-half procedures are not repeated here — they are linked.
 
 ## Status
 
-- **Landed (this repo):** `internal/intent` — the client package an
-  autoscaler or the NEEDLE dispatcher embeds — and `cmd/wardenctl`, the
+- **Landed (this repo):** public Go package `intent` — the client an
+  autoscaler or the NEEDLE dispatcher imports — and `cmd/wardenctl`, the
   reference consumer binary. Both tested against warden's exact wire contract
   (`docs/notes/api.md`); `wardenctl unauth-check` verified live against the
   rs-manager deployment (401 as expected, 2026-11-08).
@@ -29,7 +29,7 @@ side. The server-half procedures are not repeated here — they are linked.
 
 ## What a consumer embeds
 
-`internal/intent` (package doc has the full contract):
+`git.ardenone.com/jedarden/warden/intent` (package doc has the full contract):
 
 - **One token, by reference.** The token enters the process as
   `WARDEN_CALLER_TOKEN` (env) or a mode-0600 file (`wardenctl -token-file`).
@@ -45,12 +45,13 @@ side. The server-half procedures are not repeated here — they are linked.
   `*intent.Denial` (403, with warden's reason), `ErrNotFound` (404),
   `ErrConflict` (409), `ErrUpstream` (502) — so a dispatcher programs against
   outcomes, not status-string matching.
-- **A bounded scale path.** `ScaleWithinWindow` re-lists, refuses any count
-  outside the pool's live `[lowerBound, upperBound]` window client-side
-  (`ErrOutOfWindow`, nothing sent, nothing audited), and only then calls
-  `ScalePool`. The server-side envelope stays authoritative; the client guard
-  keeps a mis-programmed dispatcher from spending audit lines on certain
-  denials.
+- **A capacity-guarded scale path.** `ScaleWithinCapacity` re-lists, refuses
+  counts below the pool's `lowerBound` and growth that would exceed the
+  org-wide `cap` (`ErrOutOfCapacity`, nothing sent or audited), and then calls
+  `ScalePool`. `upperBound` is the pool's **current** desired count or
+  autoscaling ceiling, not a growth limit. The server still decides policy
+  against its own fresh snapshot; the client check only rejects bounds it can
+  determine locally.
 - **An audit identity, not the token.** `intent.Fingerprint(token)` is the
   first 12 hex chars of sha256(token) — byte-identical to the `caller` field
   warden writes to its audit log (`internal/server/server.go`). A consumer
@@ -64,7 +65,7 @@ side. The server-half procedures are not repeated here — they are linked.
   is the credential-less half alone and needs no token.
 
 `cmd/wardenctl` is the executable form: `pools`, `accounts`, `scale POOL
-COUNT` (window-guarded), `auth-check`, `unauth-check`. Exit codes: 0 success,
+COUNT` (capacity-guarded), `auth-check`, `unauth-check`. Exit codes: 0 success,
 1 operational failure, 2 usage. Output is JSON, so a dispatcher can shell out
 during bring-up and then link the package.
 
@@ -73,7 +74,10 @@ during bring-up and then link the package.
 A consumer never stores a token itself; it references one. The pattern
 mirrors warden's own (`deploy/warden-caller-tokens-externalsecret.yaml`), but
 pointed at a **path the consumer owns**, so audit attribution, rotation, and
-revocation are per-consumer:
+revocation are per-consumer. The ExternalSecret and Deployment wiring below
+applies to an **in-cluster** consumer. A fleet-host dispatcher needs its own
+host credential delivery and service configuration once that topology is
+selected; no host credential reference is deployed today.
 
 ```
 OpenBao  secret/<cluster>/<consumer>/warden-caller-token   field: token
@@ -84,14 +88,15 @@ ExternalSecret  <consumer>-warden-caller-token   (consumer's namespace)
    ▼
 Secret  <consumer>-warden-caller-token  key: WARDEN_CALLER_TOKEN
    ▼
-Deployment envFrom.secretRef  →  WARDEN_CALLER_TOKEN  →  internal/intent
+Deployment envFrom.secretRef  →  WARDEN_CALLER_TOKEN  →  intent
 ```
 
 The same raw value is *also* an entry in warden's allowlist
 (`secret/rs-manager/warden/caller-tokens`, comma-separated field) — added by
 the overlap pattern during rollout and trimmed during revocation. The value
-lives in exactly two stores: the consumer's own path and warden's allowlist.
-Everything else — manifests, Git, env files, argv — holds references only.
+resides in those two OpenBao paths, the two ExternalSecret-generated Kubernetes
+Secrets, and the running processes' memory. Manifests and Git hold references
+only; no value goes into argv or logs.
 
 The ExternalSecret body is the same shape as warden's, with the consumer's
 path and key:
@@ -159,22 +164,21 @@ executable consumer code and its deployment reference exist".
    `SecretSynced=True` on both ExternalSecrets) — never a read-back.
 4. **Wait for both ExternalSecrets** (`warden-caller-tokens` and the
    consumer's) to report `SecretSynced=True` with LAST SYNC advanced. The
-   refresh interval is 1h; an operator can force-sync (see the runbook).
+   refresh interval is 1h; a desired-state annotation change can trigger an
+   earlier sync (see the runbook). Agents make this change through GitOps.
    Order matters: the warden pod must not restart before its Secret synced,
    or it re-reads the old allowlist and the rotation silently didn't happen.
-5. **Restart warden** — it reads `WARDEN_CALLER_TOKENS` once at start. The
-   operator path is `kubectl -n warden rollout restart deployment/warden`;
-   the GitOps path is a declarative-config commit that changes the Deployment
-   pod template (e.g. bump an allowlist-version annotation), letting ArgoCD
-   do the rollout. Agents have no mutating kubectl; the GitOps path is theirs.
+5. **Restart warden** — it reads `WARDEN_CALLER_TOKENS` once at start. Commit
+   a declarative-config Deployment pod-template change (for example, bump an
+   allowlist-version annotation) and let ArgoCD roll it out. Confirm the new
+   pod is ready before testing the token.
 6. **Consumer-observed proof:** `wardenctl auth-check` from the consumer's
    context → prints the 401/200 pair and the `caller` fingerprint. This is
    the acceptance's authenticated-list check, observed by the consumer
-   itself. Correlate: the printed fingerprint must equal the `caller` field
-   of the audit line warden just wrote (`kubectl logs -n warden deploy/warden
-   | grep '"msg":"audit"'`).
+   itself. A list does not write a scale audit line; correlate that fingerprint
+   with the `caller` field of the first scale audit line from step 7.
 7. **Bounded scale/restore exercise** against the designated worker pool —
-   read-only plus two window-guarded writes, the smallest motion that proves
+   read-only plus two capacity-guarded writes, the smallest motion that proves
    the whole chain (see below).
 8. **Record** the consumer, its store path, and the allowlist version on the
    owning bead (paths and versions, never values). Superseded access (e.g. a
@@ -189,9 +193,10 @@ internal write path, `spot-price-guard.md`). The motion is deliberately
 minimal and symmetric:
 
 ```bash
-# 1. Learn the live window; pick X inside it, ≠ current size, and small:
-wardenctl pools                       # note lowerBound/upperBound of the pool
-# 2. Scale one step inside the window (window-guarded client-side):
+# 1. Learn the current bound and floor; choose a safe one-step change.
+#    For growth, confirm the new org total is at or below cap.
+wardenctl pools                       # note lowerBound/upperBound and cap
+# 2. Scale one step within capacity (client-side guard):
 wardenctl scale <pool> <X>
 # 3. Observe the effect (count changed, audit line written for your fingerprint):
 wardenctl pools
@@ -238,15 +243,15 @@ A consumer loses access by **absence on both sides**:
    the runbook. Wait for `SecretSynced=True`, restart warden: its token is
    dead the moment that pod comes up. The running pod is the last place a
    revoked token works — the restart is load-bearing, not cleanup.
-2. Write a **fresh value into the consumer's own store path** (it must not
+2. **Prove revocation while the consumer still holds the old credential:**
+   `wardenctl pools` from its context must return 401. Warden's rejection
+   log carries no accepted caller fingerprint. Do not print or copy the old
+   token for this check.
+3. Write a **fresh value into the consumer's own store path** (it must not
    hold a working credential for a revoked identity) and roll the consumer,
    or decommission the path's references entirely if the consumer is gone.
    Agents cannot delete paths; superseding the value is the agent-side
    action, and removing the path itself is an operator OIDC action.
-3. Verify by property: `wardenctl auth-check` from that consumer's context
-   must now fail 401 with the old credential, and warden's audit shows
-   `unauthorized` rejections carrying no fingerprint (rejected bearers log
-   without identity by design).
 
 ## Rollback
 
@@ -278,12 +283,10 @@ A consumer loses access by **absence on both sides**:
 - **The consumer's token lives in the consumer's store, not warden's.**
   Warden's path is the *allowlist* — the server's own config. A consumer
   that can only read its own path can never enumerate the fleet's callers.
-- **The window guard is client-side and the envelope is server-side.** Two
-  independent bounds: the consumer refuses what it can predict warden would
-  deny (cheap, no audit noise), and warden still decides authoritatively
-  against live state on every request. Neither is a substitute for the
-  other; `ScaleWithinWindow` failing open (list error) surfaces the error
-  rather than sending an unguarded write.
+- **The capacity guard is client-side and the envelope is server-side.** The
+  consumer refuses a count below the floor or growth past the org cap from a
+  fresh listing; warden then decides against live state on every request.
+  `ScaleWithinCapacity` surfaces a listing error without sending a write.
 - **`CheckAuth` demands the 401, not just the 200.** An auth check that only
   verifies the authenticated half passes against a server with auth
   disabled. The pair, in one call, is the cheapest continuously-runnable
@@ -306,6 +309,6 @@ A consumer loses access by **absence on both sides**:
   a production pool or the guarded iad-ci pool it is at best noise and at
   worst an outage drill. Designated worker pool only.
 5. **Logging the token "just this once" for debugging.** Every failure path
-  in `internal/intent` was built and tested to never carry it
+  in `intent` was built and tested to never carry it
   (`TestNoTokenMaterialAnywhere`). Debug with the fingerprint; if that is
   not enough, the answer is better errors, not credential exposure.

@@ -1,7 +1,7 @@
 // Command wardenctl is the reference consumer of warden's intent API: the
 // executable form of the caller-token handoff (bead warden-1d182474,
 // docs/notes/consumer-integration.md). An autoscaler or the NEEDLE dispatcher
-// embeds internal/intent the same way this binary does.
+// imports the public intent package the same way this binary does.
 //
 // The caller token is a credential. It reaches this process exactly one way:
 // the WARDEN_CALLER_TOKEN environment variable (a deployment sources it from
@@ -16,8 +16,8 @@
 //
 //	wardenctl [flags] pools                  list pools (JSON)
 //	wardenctl [flags] accounts               list routable organizations
-//	wardenctl [flags] scale POOL COUNT       bounded scale: refused client-side
-//	                                         outside the pool's live window
+//	wardenctl [flags] scale POOL COUNT       bounded scale: checks the live floor
+//	                                         and org-wide capacity before sending
 //	wardenctl [flags] auth-check             unauthenticated 401 + authenticated
 //	                                         200, read-only, before any scale
 //	wardenctl [flags] unauth-check           401 with no credentials at all
@@ -38,7 +38,7 @@ import (
 	"syscall"
 	"time"
 
-	"git.ardenone.com/jedarden/warden/internal/intent"
+	"git.ardenone.com/jedarden/warden/intent"
 )
 
 const usage = `usage: wardenctl [flags] <pools|accounts|scale POOL COUNT|auth-check|unauth-check>
@@ -208,10 +208,9 @@ func run(cfg *config, args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(err)
 		}
-		// ScaleWithinWindow, not ScalePool: the CLI is the bounded form. The
-		// count is checked against the pool's live window first, so a mistyped
-		// count is refused here rather than turned into an audit line.
-		res, err := c.ScaleWithinWindow(ctx, args[1], count)
+		// The CLI checks known capacity limits before sending a scale. Warden
+		// still re-reads state and enforces the full policy.
+		res, err := c.ScaleWithinCapacity(ctx, args[1], count)
 		if err != nil {
 			return fail(err)
 		}

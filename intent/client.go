@@ -55,12 +55,15 @@ var (
 	// ErrBadRequest is HTTP 400: the request shape itself was rejected.
 	ErrBadRequest = errors.New("warden: invalid request")
 
-	// ErrOutOfWindow is a client-side refusal: the requested count is outside
-	// the pool's live [lowerBound, upperBound] window, so the request was not
-	// sent. Warden would enforce this server-side anyway; the guard keeps a
-	// mis-programmed dispatcher from spending a request (and an audit line) on
-	// a certain denial.
-	ErrOutOfWindow = errors.New("warden: count outside pool window")
+	// ErrOutOfCapacity is a client-side refusal: the requested count is below
+	// zero or an autoscaled pool's floor, would grow the org past its node cap,
+	// or cannot be checked against a trustworthy listing. No scale request was
+	// sent. Warden still applies its full policy against fresh state.
+	ErrOutOfCapacity = errors.New("warden: count outside known capacity limits")
+
+	// ErrOutOfWindow is kept for callers of the former window guard.
+	// Deprecated: use ErrOutOfCapacity.
+	ErrOutOfWindow = ErrOutOfCapacity
 
 	// ErrNoToken means an operation requiring authentication was attempted
 	// with no caller token configured. Fail closed: a consumer must never
@@ -77,9 +80,9 @@ type Denial struct {
 
 func (d *Denial) Error() string { return "warden: denied: " + d.Reason }
 
-// Pool is one entry of warden's pool listing: the count window a caller can
-// program against. LowerBound/UpperBound mirror warden's semantics
-// (autoscaling.minNodes/maxNodes when autoscaled, else 0/desired).
+// Pool is one entry of warden's pool listing. LowerBound is the autoscaling
+// floor (zero for a fixed pool). UpperBound is the current autoscaling ceiling
+// or fixed desired count, not the maximum to which a caller may grow the pool.
 type Pool struct {
 	Name        string `json:"name"`
 	ServerClass string `json:"serverClass"`
@@ -237,7 +240,7 @@ func (c *Client) ScalePool(ctx context.Context, pool string, count int) (*ScaleR
 			}
 			return nil
 		case http.StatusForbidden:
-			return decodeDenial(dec)
+			return decodeDenial(dec, c.token)
 		default:
 			return statusError(status, text)
 		}
@@ -248,33 +251,70 @@ func (c *Client) ScalePool(ctx context.Context, pool string, count int) (*ScaleR
 	return &out, nil
 }
 
-// ScaleWithinWindow scales pool to count only after confirming, against a
-// fresh listing, that count lies inside the pool's live
-// [lowerBound, upperBound] window. This is the bounded form a dispatcher or
-// exercise script uses: an out-of-window count is refused client-side with
-// ErrOutOfWindow (nothing sent, nothing audited), and a missing pool returns
-// ErrNotFound. The server-side envelope remains authoritative — this guard
-// narrows the consumer's own blast radius, it does not widen warden's.
-func (c *Client) ScaleWithinWindow(ctx context.Context, pool string, count int) (*ScaleResult, error) {
+// ScaleWithinCapacity re-lists before scaling. It refuses negative counts,
+// counts below an autoscaled pool's floor, growth beyond the org cap, and
+// holds or growth when the org is already over cap. A strict reduction is
+// still allowed in that last case, matching warden's remediation policy.
+// Warden remains authoritative and re-evaluates policy against fresh state.
+func (c *Client) ScaleWithinCapacity(ctx context.Context, pool string, count int) (*ScaleResult, error) {
 	list, err := c.ListPools(ctx)
 	if err != nil {
 		return nil, err
 	}
+	if !list.AllowScale {
+		return nil, fmt.Errorf("%w: scaling disabled for organization", ErrOutOfCapacity)
+	}
+	if list.Cap < 0 {
+		return nil, fmt.Errorf("%w: invalid organization cap %d", ErrOutOfCapacity, list.Cap)
+	}
 	var live *Pool
 	for i := range list.Pools {
-		if list.Pools[i].Name == pool {
-			live = &list.Pools[i]
-			break
+		p := &list.Pools[i]
+		if p.LowerBound < 0 || p.UpperBound < p.LowerBound || (!p.Autoscaled && p.LowerBound != 0) {
+			return nil, fmt.Errorf("%w: malformed bounds for pool %s", ErrOutOfCapacity, p.Name)
+		}
+		if p.Name == pool {
+			live = p
 		}
 	}
 	if live == nil {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, pool)
 	}
-	if count < live.LowerBound || count > live.UpperBound {
-		return nil, fmt.Errorf("%w: %d outside [%d, %d] for pool %s",
-			ErrOutOfWindow, count, live.LowerBound, live.UpperBound, pool)
+	if count < 0 {
+		return nil, fmt.Errorf("%w: count %d must be nonnegative", ErrOutOfCapacity, count)
+	}
+	if live.Autoscaled && count < live.LowerBound {
+		return nil, fmt.Errorf("%w: count %d below autoscaling floor %d for pool %s",
+			ErrOutOfCapacity, count, live.LowerBound, pool)
+	}
+	// Subtract from the cap instead of summing bounds, so even a malformed
+	// enormous listing cannot overflow an int and appear under cap.
+	remaining := list.Cap
+	currentOverCap := false
+	for _, p := range list.Pools {
+		if p.UpperBound > remaining {
+			currentOverCap = true
+			break
+		}
+		remaining -= p.UpperBound
+	}
+	if currentOverCap {
+		if count >= live.UpperBound {
+			return nil, fmt.Errorf("%w: org already exceeds cap %d; pool %s requires a strict reduction below %d",
+				ErrOutOfCapacity, list.Cap, pool, live.UpperBound)
+		}
+	} else if count > live.UpperBound && count-live.UpperBound > remaining {
+		return nil, fmt.Errorf("%w: growing pool %s from %d to %d exceeds org cap %d",
+			ErrOutOfCapacity, pool, live.UpperBound, count, list.Cap)
 	}
 	return c.ScalePool(ctx, pool, count)
+}
+
+// ScaleWithinWindow is an alias for the capacity guard, whose semantics now
+// permit growth above the pool's current UpperBound when the org has room.
+// Deprecated: use ScaleWithinCapacity.
+func (c *Client) ScaleWithinWindow(ctx context.Context, pool string, count int) (*ScaleResult, error) {
+	return c.ScaleWithinCapacity(ctx, pool, count)
 }
 
 // CheckAuth proves the authentication boundary end to end, read-only: the
@@ -369,8 +409,15 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, authe
 			if readErr != nil {
 				lastErr = fmt.Errorf("warden: read response: %w", readErr)
 			} else {
-				dec := json.NewDecoder(bytes.NewReader(b))
-				text := strings.TrimSpace(string(b))
+				// A proxy or misconfigured upstream can reflect request
+				// headers in its response. Redact before any response body
+				// reaches an error path, including JSON policy denials.
+				responseText := string(b)
+				if c.token != "" {
+					responseText = strings.ReplaceAll(responseText, c.token, "[REDACTED]")
+				}
+				dec := json.NewDecoder(strings.NewReader(responseText))
+				text := strings.TrimSpace(responseText)
 				lastErr = decide(resp.StatusCode, dec, text)
 				if lastErr == nil {
 					return nil
@@ -395,13 +442,16 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, authe
 	}
 }
 
-func decodeDenial(dec *json.Decoder) error {
+func decodeDenial(dec *json.Decoder, token string) error {
 	var body struct {
 		Allowed bool   `json:"allowed"`
 		Reason  string `json:"reason"`
 	}
 	if err := dec.Decode(&body); err != nil || body.Reason == "" {
 		return fmt.Errorf("warden: denied (undecodable reason)")
+	}
+	if token != "" {
+		body.Reason = strings.ReplaceAll(body.Reason, token, "[REDACTED]")
 	}
 	return &Denial{Reason: body.Reason}
 }

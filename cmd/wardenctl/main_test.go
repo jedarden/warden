@@ -16,8 +16,12 @@ import (
 const testToken = "fixture-caller-token-0123456789abcdef"
 
 // fakeUpstream answers like warden for the paths the CLI touches.
-func fakeUpstream(t *testing.T) *httptest.Server {
+func fakeUpstream(t *testing.T, listing ...string) *httptest.Server {
 	t.Helper()
+	pools := `{"pools":[{"name":"agent-pool","serverClass":"ch.vs1.large-ord","bidPrice":"0.01","lowerBound":2,"upperBound":4,"autoscaled":true}],"cap":10,"allowScale":true}`
+	if len(listing) > 0 {
+		pools = listing[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/pools", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+testToken {
@@ -25,7 +29,7 @@ func fakeUpstream(t *testing.T) *httptest.Server {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"pools":[{"name":"agent-pool","serverClass":"ch.vs1.large-ord","bidPrice":"0.01","lowerBound":2,"upperBound":4,"autoscaled":true}],"cap":10,"allowScale":true}`))
+		_, _ = w.Write([]byte(pools))
 	})
 	mux.HandleFunc("GET /v1/accounts", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+testToken {
@@ -76,30 +80,51 @@ func TestPoolsCommandEndToEnd(t *testing.T) {
 	}
 }
 
-func TestScaleCommandRefusesOutOfWindowAndAppliesInWindow(t *testing.T) {
+func TestScaleCommandChecksFloorAndCapWhileAllowingGrowth(t *testing.T) {
 	srv := fakeUpstream(t)
-	cfg, args, err := loadConfig([]string{"-url", srv.URL, "scale", "agent-pool", "9"},
+	cfg, args, err := loadConfig([]string{"-url", srv.URL, "scale", "agent-pool", "11"},
 		envWith("WARDEN_CALLER_TOKEN", testToken))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var out, errOut bytes.Buffer
 	if code := run(cfg, args, &out, &errOut); code != 1 {
-		t.Fatalf("out-of-window scale: exit %d, want 1 (stderr %s)", code, errOut.String())
+		t.Fatalf("over-cap scale: exit %d, want 1 (stderr %s)", code, errOut.String())
 	}
-	if !strings.Contains(errOut.String(), "outside") {
-		t.Errorf("stderr = %q, want window refusal", errOut.String())
+	if !strings.Contains(errOut.String(), "cap") {
+		t.Errorf("stderr = %q, want cap refusal", errOut.String())
 	}
 
-	cfg2, args2, _ := loadConfig([]string{"-url", srv.URL, "scale", "agent-pool", "3"},
+	cfg2, args2, _ := loadConfig([]string{"-url", srv.URL, "scale", "agent-pool", "1"},
 		envWith("WARDEN_CALLER_TOKEN", testToken))
 	out.Reset()
 	errOut.Reset()
-	if code := run(cfg2, args2, &out, &errOut); code != 0 {
-		t.Fatalf("in-window scale: exit %d, stderr %s", code, errOut.String())
+	if code := run(cfg2, args2, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "floor") {
+		t.Fatalf("below-floor scale: exit %d, stderr %s", code, errOut.String())
 	}
-	if !strings.Contains(out.String(), `"allowed": true`) {
+
+	cfg3, args3, _ := loadConfig([]string{"-url", srv.URL, "scale", "agent-pool", "6"},
+		envWith("WARDEN_CALLER_TOKEN", testToken))
+	out.Reset()
+	errOut.Reset()
+	if code := run(cfg3, args3, &out, &errOut); code != 0 {
+		t.Fatalf("within-cap growth: exit %d, stderr %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), `"allowed": true`) || !strings.Contains(out.String(), `"count": 6`) {
 		t.Errorf("scale output: %s", out.String())
+	}
+}
+
+func TestScaleCommandAccountsForOtherPoolCapacity(t *testing.T) {
+	srv := fakeUpstream(t, `{"pools":[{"name":"agent-pool","lowerBound":2,"upperBound":4,"autoscaled":true},{"name":"other","lowerBound":0,"upperBound":5,"autoscaled":false}],"cap":10,"allowScale":true}`)
+	cfg, args, err := loadConfig([]string{"-url", srv.URL, "scale", "agent-pool", "6"},
+		envWith("WARDEN_CALLER_TOKEN", testToken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if code := run(cfg, args, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "cap") {
+		t.Fatalf("cross-pool over-cap scale: exit %d, stderr %s", code, errOut.String())
 	}
 }
 

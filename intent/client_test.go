@@ -67,7 +67,10 @@ func (f *fakeWarden) handler() http.Handler {
 			"cap": 10, "allowScale": true,
 		})
 		if f.listStatus != 0 {
-			status, body = f.listStatus, f.listBody
+			status = f.listStatus
+		}
+		if f.listBody != "" {
+			body = f.listBody
 		}
 		write(w, status, "application/json", body)
 	})
@@ -145,7 +148,7 @@ func TestFailClosedWithoutToken(t *testing.T) {
 	for name, call := range map[string]func() error{
 		"list":     func() error { _, err := c.ListPools(context.Background()); return err },
 		"scale":    func() error { _, err := c.ScalePool(context.Background(), "p", 1); return err },
-		"window":   func() error { _, err := c.ScaleWithinWindow(context.Background(), "p", 1); return err },
+		"capacity": func() error { _, err := c.ScaleWithinCapacity(context.Background(), "p", 1); return err },
 		"check":    func() error { _, err := c.CheckAuth(context.Background()); return err },
 		"accounts": func() error { _, err := c.ListAccounts(context.Background()); return err },
 	} {
@@ -176,6 +179,26 @@ func TestScaleDenialDecodesReason(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), testToken) {
 		t.Errorf("denial leaks token material: %v", err)
+	}
+}
+
+func TestReflectedBearerIsRedactedFromErrors(t *testing.T) {
+	f := &fakeWarden{token: testToken, listStatus: 401,
+		listBody: "unauthorized: Bearer " + testToken}
+	c, _ := newClient(t, f, Options{})
+	_, err := c.ListPools(context.Background())
+	if !errors.Is(err, ErrUnauthorized) || strings.Contains(err.Error(), testToken) {
+		t.Fatalf("reflected 401 body leaked token or lost status: %v", err)
+	}
+
+	f.listStatus = 0
+	f.listBody = ""
+	f.scaleStatus = 403
+	f.scaleBody = `{"allowed":false,"reason":"reflected Bearer ` + testToken + `"}`
+	_, err = c.ScalePool(context.Background(), "agent-pool", 3)
+	var denial *Denial
+	if !errors.As(err, &denial) || strings.Contains(err.Error(), testToken) || !strings.Contains(denial.Reason, "[REDACTED]") {
+		t.Fatalf("reflected 403 reason leaked token or lost denial: %v", err)
 	}
 }
 
@@ -269,26 +292,74 @@ func TestDefinitiveStatusesAreNotRetried(t *testing.T) {
 	}
 }
 
-func TestScaleWithinWindowGuards(t *testing.T) {
+func TestScaleWithinCapacityGuards(t *testing.T) {
 	f := &fakeWarden{token: testToken}
 	c, _ := newClient(t, f, Options{})
 
-	// Window from the fake listing: [2, 4].
-	if _, err := c.ScaleWithinWindow(context.Background(), "agent-pool", 5); !errors.Is(err, ErrOutOfWindow) {
-		t.Errorf("count 5: err = %v, want ErrOutOfWindow", err)
-	}
-	if _, err := c.ScaleWithinWindow(context.Background(), "agent-pool", 1); !errors.Is(err, ErrOutOfWindow) {
-		t.Errorf("count 1: err = %v, want ErrOutOfWindow", err)
+	// Current autoscaling ceiling 4, floor 2, org cap 10.
+	for _, count := range []int{-1, 1, 11} {
+		if _, err := c.ScaleWithinCapacity(context.Background(), "agent-pool", count); !errors.Is(err, ErrOutOfCapacity) {
+			t.Errorf("count %d: err = %v, want ErrOutOfCapacity", count, err)
+		}
 	}
 	if got := f.scaleCalls.Load(); got != 0 {
-		t.Errorf("out-of-window counts reached warden: %d scale calls", got)
+		t.Errorf("locally refused counts reached warden: %d scale calls", got)
 	}
-	res, err := c.ScaleWithinWindow(context.Background(), "agent-pool", 3)
-	if err != nil || !res.Allowed || res.Count != 3 {
-		t.Errorf("in-window scale: res=%+v err=%v", res, err)
+	for _, count := range []int{3, 5, 10} {
+		res, err := c.ScaleWithinCapacity(context.Background(), "agent-pool", count)
+		if err != nil || !res.Allowed || res.Count != count {
+			t.Errorf("count %d: res=%+v err=%v", count, res, err)
+		}
 	}
-	if _, err := c.ScaleWithinWindow(context.Background(), "nope", 3); !errors.Is(err, ErrNotFound) {
+	if _, err := c.ScaleWithinCapacity(context.Background(), "nope", 3); !errors.Is(err, ErrNotFound) {
 		t.Errorf("missing pool: err = %v, want ErrNotFound", err)
+	}
+	if _, err := c.ScaleWithinWindow(context.Background(), "agent-pool", 5); err != nil {
+		t.Errorf("compatibility alias should permit growth: %v", err)
+	}
+}
+
+func TestScaleWithinCapacityAccountsForOtherPoolsAndOverCapRemediation(t *testing.T) {
+	f := &fakeWarden{token: testToken, listBody: `{"pools":[{"name":"agent-pool","lowerBound":2,"upperBound":4,"autoscaled":true},{"name":"other","lowerBound":0,"upperBound":5,"autoscaled":false}],"cap":10,"allowScale":true}`}
+	c, _ := newClient(t, f, Options{})
+	if _, err := c.ScaleWithinCapacity(context.Background(), "agent-pool", 5); err != nil {
+		t.Fatalf("growth to remaining org capacity refused: %v", err)
+	}
+	if _, err := c.ScaleWithinCapacity(context.Background(), "agent-pool", 6); !errors.Is(err, ErrOutOfCapacity) {
+		t.Fatalf("growth across org cap: err = %v, want ErrOutOfCapacity", err)
+	}
+	if got := f.scaleCalls.Load(); got != 1 {
+		t.Errorf("scale calls = %d, want only the permitted growth", got)
+	}
+
+	f.listBody = `{"pools":[{"name":"agent-pool","lowerBound":2,"upperBound":4,"autoscaled":true},{"name":"other","lowerBound":0,"upperBound":8,"autoscaled":false}],"cap":10,"allowScale":true}`
+	for _, count := range []int{4, 5} {
+		if _, err := c.ScaleWithinCapacity(context.Background(), "agent-pool", count); !errors.Is(err, ErrOutOfCapacity) {
+			t.Errorf("over-cap count %d: err = %v, want ErrOutOfCapacity", count, err)
+		}
+	}
+	if _, err := c.ScaleWithinCapacity(context.Background(), "agent-pool", 3); err != nil {
+		t.Errorf("strict reduction while org remains over cap refused: %v", err)
+	}
+	if got := f.scaleCalls.Load(); got != 2 {
+		t.Errorf("scale calls = %d, want growth and strict reduction only", got)
+	}
+}
+
+func TestScaleWithinCapacityRejectsUntrustworthyListing(t *testing.T) {
+	cases := []string{
+		`{"pools":[{"name":"agent-pool","lowerBound":0,"upperBound":1}],"allowScale":false}`,
+		`{"pools":[{"name":"agent-pool","lowerBound":0,"upperBound":1},{"name":"other","lowerBound":3,"upperBound":2,"autoscaled":true}],"cap":10,"allowScale":true}`,
+	}
+	for _, listing := range cases {
+		f := &fakeWarden{token: testToken, listBody: listing}
+		c, _ := newClient(t, f, Options{})
+		if _, err := c.ScaleWithinCapacity(context.Background(), "agent-pool", 1); !errors.Is(err, ErrOutOfCapacity) {
+			t.Errorf("listing %s: err = %v, want ErrOutOfCapacity", listing, err)
+		}
+		if got := f.scaleCalls.Load(); got != 0 {
+			t.Errorf("listing %s: scale calls = %d, want 0", listing, got)
+		}
 	}
 }
 
@@ -400,7 +471,7 @@ func TestNoTokenMaterialAnywhere(t *testing.T) {
 	errs = append(errs, err)
 	_, err = c.ScalePool(context.Background(), "p", 2)
 	errs = append(errs, err)
-	_, err = c.ScaleWithinWindow(context.Background(), "p", 2)
+	_, err = c.ScaleWithinCapacity(context.Background(), "p", 2)
 	errs = append(errs, err)
 	_, err = c.ListAccounts(context.Background())
 	errs = append(errs, err)

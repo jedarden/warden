@@ -2,7 +2,7 @@
 
 The status codes and response bodies callers (NEEDLE workers, the future
 autoscaler) should program against. Consumers normally program against them
-through `internal/intent` / `cmd/wardenctl`, which maps this table to
+through the public `intent` package / `cmd/wardenctl`, which maps this table to
 sentinel errors. Endpoint list and scale semantics live in the README; the
 enforcement reasons behind the 403s live in
 [`invariant-policy.md`](invariant-policy.md); the auth model lives in
@@ -59,9 +59,11 @@ reachable).
 else the fixed `desired`. `lowerBound` is the scale-request floor: counts below
 it are denied with the below-minNodes 403 (see the denial table below). It is
 `autoscaling.minNodes` when `autoscaled`, else `0` — on a fixed pool any
-non-negative count is legal. Together `lowerBound ≤ count ≤ upperBound` is the
-count window a caller can program against; a count inside it can still be
-denied by the org ceiling, the class allowlist, or the bid cap. Lowering a
+non-negative count satisfies the floor. `upperBound` describes the pool's
+**current** desired count or autoscaling ceiling, not a maximum allowed request.
+Growth above it is possible if the resulting org-wide total stays within
+`cap`; a count satisfying that arithmetic can still be denied by the class
+allowlist, bid cap, or other server policy. Lowering a
 floor is a pool re-shape done out-of-band (console/Terraform); warden never
 writes `minNodes`.
 

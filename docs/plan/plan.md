@@ -179,8 +179,8 @@ See `docs/notes/security-model.md`.
       read as a change (one follow-up alert, no re-scale).
 - [ ] Phase 4: Point a deterministic autoscaler (or the NEEDLE dispatcher) at
       warden; confirm scale-up / scale-to-zero end to end against a real pool.
-      Client half landed 2026-11-08 (bead `warden-1d182474`): `internal/intent`
-      (caller-token client, window-guarded scale, auth-boundary check) and the
+      Client half landed 2026-11-08 (bead `warden-1d182474`): public `intent`
+      (caller-token client, capacity-guarded scale, auth-boundary check) and the
       reference consumer `cmd/wardenctl`, plus the handoff runbook
       (`docs/notes/consumer-integration.md`); `wardenctl unauth-check` verified
       live (401). Remaining: select the consumer owner (demand signal,

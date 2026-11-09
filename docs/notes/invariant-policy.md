@@ -38,7 +38,9 @@ warden never writes `autoscaling.minNodes`. A count below the pool's current
 it out-of-band and retry. Since bead `warden-db1e5d95` the enforced floor is
 visible to callers: `GET /v1/pools` returns each pool's `lowerBound`
 (`minNodes` when autoscaled, `0` on a fixed pool) next to `upperBound`, so a
-caller can stay inside the window without probing for the 403.
+caller can respect the floor without probing for the 403. `upperBound` is
+the pool's current count or ceiling, not a limit on scale-up; permitted growth
+also depends on the org-wide cap and live policy.
 Scale-to-zero on an autoscaled pool therefore requires
 `minNodes = 0` and means `maxNodes = 0`: the autoscaler may not add nodes (the
 pool is paused), not that anything is deleted.
